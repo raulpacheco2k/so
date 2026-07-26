@@ -190,11 +190,10 @@ rm Electrum-4.6.2.tar.gz
 
 # Instalando Ollama
 curl -fsSL https://ollama.com/install.sh | sh
-ollama pull kimi-k2:1t-cloud
-ollama pull minimax-m2:cloud
-ollama pull gpt-oss:120b-cloud
-ollama pull deepseek-v3.1:671b-cloud
-ollama pull qwen3-coder:480b-cloud
+ollama pull deepseek-v4-pro:cloud
+ollama pull deepseek-v4-flash:cloud
+ollama pull glm-5.2:cloud
+ollama pull kimi-k2.7-code:cloud
 
 # Limpeza do sistema 
 sudo apt-get autoremove --purge -y
