@@ -1,0 +1,65 @@
+# Omarchy-style Alacritty configuration
+# (colors inlined from the Omarchy "vantablack" theme)
+
+[env]
+TERM = "xterm-256color"
+
+[terminal]
+osc52 = "CopyPaste"
+
+[font]
+normal = { family = "JetBrainsMono Nerd Font", style = "Regular" }
+bold = { family = "JetBrainsMono Nerd Font", style = "Bold" }
+italic = { family = "JetBrainsMono Nerd Font", style = "Italic" }
+size = 6
+
+[window]
+padding.x = 14
+padding.y = 14
+decorations = "None"
+opacity = 0.9
+
+[keyboard]
+bindings = [
+  { key = "Insert", mods = "Shift", action = "Paste" },
+  { key = "Insert", mods = "Control", action = "Copy" },
+  { key = "Return", mods = "Shift", chars = "\u001B\r" }
+]
+
+[colors]
+[colors.primary]
+background = "#000000"
+foreground = "#ffffff"
+dim_foreground = "#5c5c5c"
+
+[colors.cursor]
+text = "#000000"
+cursor = "#ffffff"
+
+[colors.vi_mode_cursor]
+text = "#000000"
+cursor = "#ffffff"
+
+[colors.selection]
+text = "#000000"
+background = "#ffffff"
+
+[colors.normal]
+black = "#404040"
+red = "#a4a4a4"
+green = "#b6b6b6"
+yellow = "#cecece"
+blue = "#8d8d8d"
+magenta = "#9b9b9b"
+cyan = "#b0b0b0"
+white = "#ececec"
+
+[colors.bright]
+black = "#5c5c5c"
+red = "#a4a4a4"
+green = "#b6b6b6"
+yellow = "#cecece"
+blue = "#8d8d8d"
+magenta = "#9b9b9b"
+cyan = "#b0b0b0"
+white = "#ffffff"

@@ -1,0 +1,201 @@
+/* Vantablack (Omarchy) - monochrome palette
+ * bg #0d0d0d | fg #ffffff | accent #8d8d8d | selection invert (#ffffff/#0d0d0d)
+ */
+@define-color window_bg_color #0d0d0d;
+@define-color accent_bg_color #8d8d8d;
+@define-color theme_fg_color #ffffff;
+@define-color error_bg_color #a4a4a4;
+@define-color error_fg_color #0d0d0d;
+
+* {
+  all: unset;
+}
+
+* {
+  font-family: "JetBrainsMono Nerd Font";
+  font-size: 18px;
+  color: @theme_fg_color;
+}
+
+popover {
+  background: #1f1f1f;
+  border: none;
+  border-radius: 8px;
+  padding: 8px;
+}
+
+scrollbar {
+  opacity: 0;
+}
+
+.normal-icons {
+  -gtk-icon-size: 16px;
+}
+
+.large-icons {
+  -gtk-icon-size: 32px;
+}
+
+.box-wrapper {
+  background: alpha(@window_bg_color, 0.95);
+  padding: 20px;
+  border: 2px solid #2b2b2b;
+}
+
+.preview-box {
+}
+
+.box {
+}
+
+.search-container {
+  background: #1a1a1a;
+  padding: 10px;
+}
+
+.input placeholder {
+  opacity: 0.5;
+}
+
+.input {
+  caret-color: #8d8d8d;
+}
+
+.input:focus,
+.input:active {
+  box-shadow: none;
+  outline: none;
+}
+
+.content-container {
+  background: #0d0d0d;
+}
+
+.placeholder {
+}
+
+.scroll {
+}
+
+.list {
+}
+
+child,
+child > * {
+}
+
+child:hover .item-box {
+}
+
+child:selected .item-box {
+  background: #ffffff;
+}
+
+child:selected .item-box * {
+  color: #0d0d0d;
+}
+
+.item-box {
+  padding-left: 14px;
+}
+
+.item-text-box {
+  all: unset;
+  padding: 14px 0;
+}
+
+.item-text {
+}
+
+.item-subtext {
+  font-size: 0px;
+  min-height: 0px;
+  margin: 0px;
+  padding: 0px;
+}
+
+.item-image {
+  margin-right: 14px;
+  -gtk-icon-transform: scale(0.9);
+}
+
+.item-quick-activation {
+  background: alpha(@accent_bg_color, 0.3);
+  border-radius: 4px;
+  padding: 8px;
+}
+
+.current {
+  font-style: italic;
+}
+
+.keybinds {
+  background: #050505;
+  padding: 10px;
+  margin-top: 10px;
+}
+
+.keybind-button {
+  opacity: 0.75;
+}
+
+.keybind-button:hover {
+  opacity: 1;
+}
+
+.keybind-bind {
+  text-transform: lowercase;
+}
+
+.keybind-label {
+  padding: 2px 6px;
+  border-radius: 2px;
+  border: 1px solid #8d8d8d;
+  color: #ececec;
+}
+
+.preview {
+  border: 1px solid alpha(@accent_bg_color, 0.35);
+  border-radius: 8px;
+  color: @theme_fg_color;
+}
+
+.calc .item-text {
+  font-size: 24px;
+}
+
+.symbols .item-image {
+  font-size: 24px;
+}
+
+.todo.done .item-text-box {
+  opacity: 0.25;
+}
+
+.todo.urgent {
+  font-size: 24px;
+}
+
+.todo.active {
+  font-weight: bold;
+}
+
+.bluetooth.disconnected {
+  opacity: 0.5;
+}
+
+.preview .large-icons {
+  -gtk-icon-size: 64px;
+}
+
+.error {
+  padding: 10px;
+  background: @error_bg_color;
+  color: @error_fg_color;
+}
+
+.preview-content.archlinuxpkgs,
+.preview-content.dnfpackages,
+.preview-content.aptpackages {
+  font-family: monospace;
+}
