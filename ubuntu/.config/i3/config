@@ -34,6 +34,8 @@ client.background       #000000
 
 # Atalhos
 bindsym $mod+p exec nautilus
+## Captura de tela interativa com Flameshot (X11)
+bindsym Print exec --no-startup-id flameshot gui
 
 # Atalho para sites
 bindsym $mod+Shift+m exec zen https://webmail709.umbler.com/
