@@ -132,6 +132,7 @@ project_files_are_present() {
     for required_file in .bashrc .gitconfig .codex/config.toml \
         .config/alacritty/alacritty.toml \
         .config/i3/config .config/i3/lock.sh .config/i3/keyboard.sh \
+        .config/i3/monitor-hotplug.sh \
         .config/i3/dot-hands.jpg \
         .config/i3/success-delay.sh .config/i3/vol.sh \
         .config/i3/audio-lib.sh .config/i3/audio-menu.sh \
@@ -442,6 +443,7 @@ install_local_configs() {
     chmod 644 "$HOME/.config/btop/themes/grayscale.theme"
     chmod 755 "$HOME/.config/i3/lock.sh" \
         "$HOME/.config/i3/keyboard.sh" \
+        "$HOME/.config/i3/monitor-hotplug.sh" \
         "$HOME/.config/i3/success-delay.sh" \
         "$HOME/.config/i3/vol.sh" \
         "$HOME/.config/i3/audio-menu.sh" \
