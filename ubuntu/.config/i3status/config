@@ -1,0 +1,70 @@
+# i3status configuration file (Omarchy vantablack theme).
+# see "man i3status" for documentation.
+
+general {
+        output_format = "i3bar"
+        colors = true
+        interval = 60
+
+        # Omarchy vantablack monochrome palette.
+        # black bg comes from the bar in i3 config.
+        color_good = "#ececec"
+        color_degraded = "#b0b0b0"
+        color_bad = "#8d8d8d"
+
+        separator = "  "
+}
+
+order += "wireless _first_"
+order += "ethernet _first_"
+order += "disk /"
+order += "cpu_usage"
+order += "memory"
+order += "battery all"
+order += "tztime date"
+order += "tztime time"
+
+wireless _first_ {
+        format_up = "%quality %essid (%bitrate)"
+        format_down = "󰤮 Sem conexão"
+        color_bad = "#8d8d8d"
+}
+
+ethernet _first_ {
+        format_up = "󰈁 (%ip)"
+        format_down = "󰈂 Sem conexão"
+        color_bad = "#8d8d8d"
+}
+
+battery all {
+        integer_battery_capacity = true
+        last_full_capacity = true
+        format = "%status %percentage %remaining"
+        format_down = "󰲼"
+        status_chr = "󰂅"
+        status_bat = "󰂂"
+        status_unk = "󰁹"
+        status_full = "󰁹"
+}
+
+disk "/" {
+        format = "󰋊 %avail"
+}
+
+cpu_usage {
+        format = "󰍛 %usage"
+}
+
+memory {
+        format = "  %used"
+        threshold_degraded = "1G"
+        format_degraded = "󰅩 %used"
+}
+
+tztime date {
+        format = "󰸘 %d/%m/%Y"
+}
+
+tztime time {
+        format = "󱑎 %H:%M:%S"
+}
