@@ -364,6 +364,77 @@ agent_pin() {
     fi
 }
 
+strip_ansi_sequences() {
+    local text="$1"
+    local sequence
+    local csi_pattern=$'\033''\[[0-?]*[ -/]*[@-~]'
+
+    # O bluetoothctl colore partes da saida do agente com sequencias CSI.
+    # Remova-as antes de procurar os textos e codigos exibidos pelo BlueZ.
+    while [[ "$text" =~ $csi_pattern ]]; do
+        sequence="${BASH_REMATCH[0]}"
+        text="${text//"$sequence"/}"
+    done
+    REPLY="$text"
+}
+
+# DisplayPasskey nao espera uma resposta do agente: o BlueZ chama o agente
+# novamente conforme os digitos entram no teclado. A janela precisa, portanto,
+# apenas mostrar o codigo e permanecer independente do loop que consome o
+# bluetoothctl. PASSKEY_LAST_VALUE evita reabrir a janela para os eventos
+# repetidos emitidos durante a mesma autenticacao.
+PASSKEY_WINDOW_PID=""
+PASSKEY_LAST_VALUE=""
+
+passkey_window_close() {
+    local window_pid="$PASSKEY_WINDOW_PID"
+
+    PASSKEY_WINDOW_PID=""
+    if [[ "$window_pid" =~ ^[0-9]+$ ]]; then
+        if kill -0 "$window_pid" 2>/dev/null; then
+            kill "$window_pid" 2>/dev/null || true
+        fi
+        wait "$window_pid" 2>/dev/null || true
+    fi
+}
+
+passkey_window_show() {
+    local passkey="$1"
+    local message="PIN: $passkey — digite no K380 e pressione Enter"
+
+    # O mesmo DisplayPasskey pode ser emitido varias vezes, inclusive depois
+    # de o usuario fechar a janela com Enter. Nao crie outra janela nesse caso.
+    if [[ "$PASSKEY_LAST_VALUE" == "$passkey" ]]; then
+        return 0
+    fi
+    PASSKEY_LAST_VALUE="$passkey"
+
+    if [[ -n "$PASSKEY_WINDOW_PID" ]]; then
+        passkey_window_close
+    fi
+
+    if command_is_available "$DMENU"; then
+        # A linha vazia fornece uma entrada para o dmenu e o EOF deixa a
+        # janela interativa. O pipeline inteiro roda em segundo plano para
+        # que o agente continue consumindo os eventos do bluetoothctl.
+        printf '\n' | "$DMENU" -i -l 1 -p "$message" \
+            -fn 'JetBrainsMono Nerd Font:size=10' \
+            -nb '#000000' -nf '#ffffff' -sb '#ffffff' -sf '#000000' \
+            >/dev/null 2>&1 &
+        PASSKEY_WINDOW_PID=$!
+        return 0
+    fi
+
+    if command_is_available "$WALKER"; then
+        printf '\n' | "$WALKER" --dmenu --exit --theme vantablack \
+            --width 644 --height 130 --placeholder "$message" \
+            >/dev/null 2>&1 &
+        PASSKEY_WINDOW_PID=$!
+    fi
+}
+
+trap 'passkey_window_close' EXIT
+
 # Pareia em segundo plano com um agente residente. A saida do bluetoothctl e
 # consumida aqui para responder prompts sem abrir um terminal. Retorna 0 quando
 # a conexao foi estabelecida, 2 quando o usuario cancelou e 1 em falha.
@@ -372,8 +443,11 @@ pair_with_agent() {
     local timeout_seconds="$2"
     local bt_in="" bt_out="" bt_pid="" byte buffer=""
     local result="" answer="" passkey=""
+    local normalized_buffer="" normalized_event_line=""
     local deadline waited
     local trust_sent=0 failed_pending=0
+
+    PASSKEY_LAST_VALUE=""
 
     if ! ensure_radio; then
         return 1
@@ -398,19 +472,28 @@ pair_with_agent() {
                 buffer="${buffer: -480}"
             fi
 
-            if [[ "$buffer" == *"Request PIN code"* \
-                || "$buffer" == *"Enter PIN code"* ]]; then
+            strip_ansi_sequences "$buffer"
+            normalized_buffer="$REPLY"
+            normalized_event_line="${normalized_buffer##*$'\n'}"
+            if [[ "$normalized_event_line" != *"Request PIN code"* \
+                && "$normalized_event_line" != *"Enter PIN code"* \
+                && "$normalized_event_line" =~ (Passkey|PIN[[:space:]]+code):[[:space:]]*([0-9]{6}) ]]; then
+                passkey_window_show "${BASH_REMATCH[2]}"
+                buffer=""
+            elif [[ "$normalized_buffer" == *"Request PIN code"* \
+                || "$normalized_buffer" == *"Enter PIN code"* ]]; then
                 answer="$(agent_pin "PIN do Bluetooth para $target")"
                 if [[ "$answer" == cancel ]]; then
                     printf 'cancel-pairing\n' >&"$bt_in" 2>/dev/null || true
                     result="cancelled"
+                    passkey_window_close
                 else
                     printf '%s\n' "$answer" >&"$bt_in" 2>/dev/null || true
                 fi
                 buffer=""
-            elif [[ "$buffer" == *"Confirm passkey"* ]]; then
+            elif [[ "$normalized_buffer" == *"Confirm passkey"* ]]; then
                 passkey=""
-                if [[ "$buffer" =~ [Pp]asskey[[:space:]]+([0-9]{1,6}) ]]; then
+                if [[ "$normalized_buffer" =~ [Pp]asskey[[:space:]]+([0-9]{1,6}) ]]; then
                     passkey="${BASH_REMATCH[1]}"
                 fi
                 answer="$(agent_confirm \
@@ -418,36 +501,41 @@ pair_with_agent() {
                 if [[ "$answer" == cancel ]]; then
                     printf 'cancel-pairing\n' >&"$bt_in" 2>/dev/null || true
                     result="cancelled"
+                    passkey_window_close
                 else
                     printf '%s\n' "$answer" >&"$bt_in" 2>/dev/null || true
                 fi
                 buffer=""
-            elif [[ "$buffer" == *"Enter passkey"* ]]; then
+            elif [[ "$normalized_buffer" == *"Enter passkey"* ]]; then
                 answer="$(agent_pin 'Digite a passkey exibida no dispositivo')"
                 if [[ "$answer" == cancel ]]; then
                     printf 'cancel-pairing\n' >&"$bt_in" 2>/dev/null || true
                     result="cancelled"
+                    passkey_window_close
                 else
                     printf '%s\n' "$answer" >&"$bt_in" 2>/dev/null || true
                 fi
                 buffer=""
-            elif [[ "$buffer" == *"Authorize"* ]]; then
+            elif [[ "$normalized_buffer" == *"Authorize"* ]]; then
                 answer="$(agent_confirm "Autorizar o dispositivo $target?")"
                 if [[ "$answer" == cancel ]]; then
                     printf 'cancel-pairing\n' >&"$bt_in" 2>/dev/null || true
                     result="cancelled"
+                    passkey_window_close
                 else
                     printf '%s\n' "$answer" >&"$bt_in" 2>/dev/null || true
                 fi
                 buffer=""
-            elif [[ "$buffer" == *"Pairing successful"* ]]; then
+            elif [[ "$normalized_buffer" == *"Pairing successful"* ]]; then
+                passkey_window_close
                 if ((trust_sent == 0)); then
                     printf 'trust %s\nconnect %s\n' "$target" "$target" \
                         >&"$bt_in" 2>/dev/null || true
                     trust_sent=1
                 fi
                 buffer=""
-            elif [[ "$buffer" == *"AlreadyExists"* ]]; then
+            elif [[ "$normalized_buffer" == *"AlreadyExists"* ]]; then
+                passkey_window_close
                 # Corrida ou estado antigo: se ja existe, o proximo passo e
                 # conectar, nunca abrir outro fluxo de pareamento.
                 if ((trust_sent == 0)); then
@@ -457,16 +545,18 @@ pair_with_agent() {
                 fi
                 failed_pending=0
                 buffer=""
-            elif [[ "$buffer" == *"Connection successful"* ]]; then
+            elif [[ "$normalized_buffer" == *"Connection successful"* ]]; then
+                passkey_window_close
                 result="connected"
                 buffer=""
-            elif [[ "$buffer" == *"AuthenticationFailed"* \
-                || "$buffer" == *"Failed to connect"* \
-                || "$buffer" == *"No agent available"* \
-                || "$buffer" == *"Canceled"* ]]; then
+            elif [[ "$normalized_buffer" == *"AuthenticationFailed"* \
+                || "$normalized_buffer" == *"Failed to connect"* \
+                || "$normalized_buffer" == *"No agent available"* \
+                || "$normalized_buffer" == *"Canceled"* ]]; then
+                passkey_window_close
                 result="failed"
                 buffer=""
-            elif [[ "$buffer" == *"Failed to pair"* ]]; then
+            elif [[ "$normalized_buffer" == *"Failed to pair"* ]]; then
                 # Aguarda o restante da mesma linha para distinguir
                 # AlreadyExists de um erro real de pareamento.
                 failed_pending=1
@@ -495,6 +585,7 @@ pair_with_agent() {
     fi
 
     printf 'scan off\nquit\n' >&"$bt_in" 2>/dev/null || true
+    passkey_window_close
     exec {bt_in}>&- 2>/dev/null || true
     exec {bt_out}>&- 2>/dev/null || true
 
