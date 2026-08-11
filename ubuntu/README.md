@@ -2,7 +2,7 @@
 
 Este repositório contém scripts e configurações pessoais projetados para automatizar a configuração de um ambiente de desenvolvimento e trabalho produtivo baseado no Ubuntu. O objetivo é garantir a automação, reprodutibilidade e eficiência na instalação de ferramentas essenciais e na aplicação de settings personalizados.
 
-> O código foi analisado com `bash -n ubuntu.sh`. 
+> O código foi analisado com `bash -n ubuntu.sh`.
 
 ## Execução
 
