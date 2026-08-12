@@ -135,6 +135,7 @@ project_files_are_present() {
         .config/i3/monitor-hotplug.sh \
         .config/i3/dot-hands.jpg \
         .config/i3/success-delay.sh .config/i3/vol.sh \
+        .config/i3/brightness.sh \
         .config/i3/audio-lib.sh .config/i3/audio-menu.sh \
         .config/i3/wifi-menu.sh .config/i3/bluetooth-menu.sh \
         .config/i3/walker-service.sh \
@@ -449,6 +450,7 @@ install_local_configs() {
         "$HOME/.config/i3/audio-menu.sh" \
         "$HOME/.config/i3/wifi-menu.sh" \
         "$HOME/.config/i3/bluetooth-menu.sh" \
+        "$HOME/.config/i3/brightness.sh" \
         "$HOME/.config/i3/walker-service.sh" \
         "$HOME/.config/i3/walker-close-on-blur.sh" \
         "$HOME/.config/i3status/i3status_filter.py" \

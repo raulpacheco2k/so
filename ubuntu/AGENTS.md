@@ -19,6 +19,7 @@ Este repositório versiona a configuração pessoal de um ambiente Ubuntu focado
 - `.config/i3/config`: atalhos, regras de janelas, monitores, barra, serviços de inicialização e wallpaper.
 - `.config/i3/*.sh`: bloqueio de tela, volume, menus de áudio, Bluetooth e Wi-Fi, atraso de sucesso e integração do Walker com o Elephant.
 - `.config/i3/audio-lib.sh`: camada comum de áudio (detecção do backend `pactl`/`wpctl`, descoberta, aplicação, volume e notificações) usada pelo menu de áudio, pelo `vol` e pelo filtro do i3status.
+- `.config/i3/brightness.sh`: ajuste do brilho em passos de 5%, sempre terminando em 0 ou 5, com o mesmo tratamento de arredondamento do volume.
 - `.config/wireplumber/wireplumber.conf.d/51-ubuntu-bluetooth.conf`: perfis Bluetooth A2DP, HFP/HSP e LE Audio BAP habilitados por capacidade, sem nomes ou endereços de hardware.
 - `.config/i3/dot-hands.jpg`: wallpaper versionado junto da configuração.
 - `.config/i3status/config` e `i3status_filter.py`: status da rede, volume, disco, CPU, memória, bateria, data e hora.
