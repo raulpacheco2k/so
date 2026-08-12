@@ -386,7 +386,7 @@ menu_choice() {
             exec 9>&-
             printf '%s\n' "${labels[@]}" \
                 | "$DMENU" -i -l "$lines" -p "$prompt" \
-                    -fn 'JetBrainsMono Nerd Font:size=10' \
+                    -fn 'JetBrainsMono Nerd Font:size=12' \
                     -nb '#000000' -nf '#ffffff' -sb '#ffffff' -sf '#000000'
         )" || true
         for index in "${!labels[@]}"; do
@@ -436,7 +436,7 @@ agent_pin() {
             exec 9>&-
             printf '%s\n' '0000' 'Cancelar' \
                 | "$DMENU" -i -l 2 -p "$prompt" \
-                    -fn 'JetBrainsMono Nerd Font:size=10' \
+                    -fn 'JetBrainsMono Nerd Font:size=12' \
                     -nb '#000000' -nf '#ffffff' -sb '#ffffff' -sf '#000000'
         )" || true
         if [[ "$selected" =~ ^[0-9]{1,16}$ ]]; then
@@ -510,7 +510,7 @@ passkey_window_show() {
         (
             exec 9>&-
             exec "$DMENU" -i -l 1 -p "$message" \
-                -fn 'JetBrainsMono Nerd Font:size=10' \
+                -fn 'JetBrainsMono Nerd Font:size=12' \
                 -nb '#000000' -nf '#ffffff' -sb '#ffffff' -sf '#000000' \
                 </dev/null >/dev/null 2>&1
         ) &
@@ -1050,7 +1050,7 @@ launch_discovery_menu() {
     (
         exec 9>&-
         exec "$DMENU" -i -l "$lines" -p 'Bluetooth > Conectar novo dispositivo' \
-            -fn 'JetBrainsMono Nerd Font:size=10' \
+            -fn 'JetBrainsMono Nerd Font:size=12' \
             -nb '#000000' -nf '#ffffff' -sb '#ffffff' -sf '#000000' \
             <"$input_file" >"$result_file" 2>/dev/null
     ) &

@@ -44,9 +44,17 @@ troca pode reduzir a qualidade de reprodução em headsets clássicos.
 
 Para gerenciar redes Wi-Fi no X11/i3, o bloco `wireless` do i3status abre um
 menu dmenu minimalista com a paleta Vantablack. O menu usa `nmcli`, permite
-ativar e desativar o rádio, conectar redes salvas, abrir o editor de conexões
-e pedir a senha de uma rede nova dentro do Alacritty. O Walker é usado como
-fallback quando dmenu não está disponível.
+ativar e desativar o rádio e, com o rádio desligado, mostra apenas a opção de
+ativá-lo. Ligado, cada rede salva aparece em um submenu próprio
+(`Gerenciar: <nome>`) com as ações de conectar/desconectar e `Esquecer rede`;
+esquecer exige confirmação, desconecta a rede quando necessário e remove o
+perfil do NetworkManager. `Conectar nova rede Wi-Fi` abre uma descoberta em
+tempo real das redes próximas não salvas e pede a senha pelo próprio dmenu,
+sem abrir aplicações externas; um perfil criado com senha errada é removido
+após a falha. Os submenus usam breadcrumbs
+(`Wi-Fi > <rede> > Esquecer?` e `Wi-Fi > Conectar nova rede`) e `Voltar` para
+retornar ao nível anterior; as ações confirmam o resultado com notificação. O
+Walker é usado como fallback quando dmenu não está disponível.
 
 O bloco `bluetooth` fica sempre visível ao lado dos indicadores de
 conectividade. O clique esquerdo abre um menu dmenu com fallback para Walker,

@@ -71,7 +71,7 @@ menu_choice() {
     if [[ -x "$DMENU" ]]; then
         selected="$(printf '%s\n' "${labels[@]}" \
             | "$DMENU" -i -l "$lines" -p "$prompt" \
-                -fn 'JetBrainsMono Nerd Font:size=10' \
+                -fn 'JetBrainsMono Nerd Font:size=12' \
                 -nb '#000000' -nf '#ffffff' -sb '#ffffff' -sf '#000000')" || true
         for i in "${!labels[@]}"; do
             if [[ "${labels[$i]}" == "$selected" ]]; then
