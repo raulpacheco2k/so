@@ -51,15 +51,28 @@ fallback quando dmenu não está disponível.
 O bloco `bluetooth` fica sempre visível ao lado dos indicadores de
 conectividade. O clique esquerdo abre um menu dmenu com fallback para Walker,
 usando `bluetoothctl` (fornecido pelo pacote `bluez`) e `rfkill` para ligar ou
-desbloquear o rádio, conectar e desconectar dispositivos pareados, iniciar uma
-descoberta e parear novos dispositivos. Nenhuma janela de terminal é aberta:
-o pareamento mantém o agente Bluetooth em segundo plano e solicita PIN,
-passkey e autorizações graficamente, com cancelamento disponível. Conectar
-nunca inicia um novo pareamento; se o vínculo for rejeitado, o menu oferece a
-ação explícita `Reparar vínculo`. Após conectar, a saída de áudio Bluetooth
-reportada pelo servidor da sessão é selecionada automaticamente como padrão.
-Os tempos podem ser ajustados com `BLUETOOTH_SCAN_SECONDS`,
-`BLUETOOTH_PAIR_SCAN_SECONDS`, `BLUETOOTH_CONNECT_TIMEOUT` e
+desbloquear o rádio, conectar e desconectar dispositivos pareados e conectar
+novos dispositivos. A busca de novos dispositivos abre um segundo menu com os
+resultados; selecionar um item executa pareamento e conexão automaticamente.
+Cada dispositivo pareado aparece em um submenu próprio, com as ações de
+conectar/desconectar e `Esquecer dispositivo`. Esquecer exige confirmação,
+desconecta o dispositivo quando necessário e remove o vínculo do BlueZ; a
+operação não bloqueia o dispositivo e pode ser revertida pareando-o novamente.
+Os submenus usam `Voltar` para retornar ao nível anterior sem executar uma
+ação; `Cancelar` permanece reservado para interromper diálogos de autenticação
+durante o pareamento.
+Nenhuma janela de terminal é aberta: o agente Bluetooth permanece em segundo
+plano e solicita PIN, passkey e autorizações graficamente, com cancelamento
+disponível. Se uma conexão falhar por autenticação ou chave inválida, o vínculo
+é atualizado automaticamente uma vez; falhas temporárias apenas notificam o
+usuário. Após conectar, a saída de áudio Bluetooth reportada pelo servidor da
+sessão é selecionada automaticamente como padrão. O menu pode ser aberto a
+qualquer momento, inclusive durante uma conexão: as operações são serializadas
+por dispositivo (conectar, desconectar, esquecer e reparar), permitindo operar
+outros dispositivos enquanto um deles conecta; pareamento e ligar/desligar o
+rádio continuam exclusivos. Os tempos podem ser
+ajustados com `BLUETOOTH_SCAN_SECONDS` (ou o alias legado
+`BLUETOOTH_PAIR_SCAN_SECONDS`), `BLUETOOTH_CONNECT_TIMEOUT` e
 `BLUETOOTH_AUDIO_WAIT_SECONDS`.
 
 As configuracoes de i3 dependem de uma sessao X11 e de nomes de dispositivos,

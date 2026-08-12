@@ -31,7 +31,8 @@ BLUETOOTHCTL = os.environ.get(
 BATTERY_ICON = "󰁹"
 BATTERY_LOW_ICON = "󰂃"
 BATTERY_CHARGING_ICON = "󰂄"
-BLUETOOTH_ICON = "󰂯"
+BLUETOOTH_ON_ICON = "󰂯"
+BLUETOOTH_OFF_ICON = "󰂲"
 
 WIFI_STRENGTH_ICONS = (
     "󰤯",  # 0: wifi-strength-outline
@@ -128,7 +129,7 @@ def bluetooth_segment():
         return {
             "name": "bluetooth",
             "markup": "none",
-            "full_text": f"{BLUETOOTH_ICON} sem controlador",
+            "full_text": f"{BLUETOOTH_OFF_ICON} sem controlador",
         }
 
     blocked = re.search(
@@ -139,29 +140,31 @@ def bluetooth_segment():
         return {
             "name": "bluetooth",
             "markup": "none",
-            "full_text": f"{BLUETOOTH_ICON} bloqueado",
+            "full_text": f"{BLUETOOTH_OFF_ICON} bloqueado",
         }
     if not powered_match or powered_match.group(1) != "yes":
         return {
             "name": "bluetooth",
             "markup": "none",
-            "full_text": f"{BLUETOOTH_ICON} Desligado",
+            "full_text": f"{BLUETOOTH_OFF_ICON} Desligado",
             "color": GRAY,
         }
+
+    bluetooth_icon = BLUETOOTH_ON_ICON
 
     if not paired:
         paired = parse_devices(bluetoothctl_output("paired-devices"))
     names = [name for name in connected.values() if name]
 
     if not names:
-        text = f"{BLUETOOTH_ICON} Ligado"
+        text = f"{bluetooth_icon} Ligado"
     elif len(names) == 1:
-        text = f"{BLUETOOTH_ICON} {names[0]}"
+        text = f"{bluetooth_icon} {names[0]}"
     else:
         shown = ", ".join(names[:2])
         if len(names) > 2:
             shown += ", ..."
-        text = f"{BLUETOOTH_ICON} {len(names)} conectados: {shown}"
+        text = f"{bluetooth_icon} {len(names)} conectados: {shown}"
 
     return {"name": "bluetooth", "markup": "none", "full_text": text}
 

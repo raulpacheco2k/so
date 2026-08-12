@@ -2,9 +2,9 @@
 
 # Menu Bluetooth para i3status: dmenu no X11 (com fallback para Walker) e
 # bluetoothctl como backend. Os fluxos sao lineares e previsiveis:
-# - conectar nunca pareia e nunca abre um terminal;
+# - conectar e descobrir dispositivos nunca abrem um terminal;
 # - parear usa um agente em segundo plano e prompts graficos;
-# - um vinculo rejeitado so e removido por uma acao explicita de reparo.
+# - um vinculo rejeitado e atualizado automaticamente quando a autenticacao falha.
 # Nenhum nome de hardware e assumido; os alvos sao enderecos do BlueZ e
 # destinos de audio reportados pelo servidor da sessao.
 set -Eeuo pipefail
@@ -23,20 +23,18 @@ NOTIFY_SEND="${NOTIFY_SEND_BIN:-notify-send}"
 RFKILL="${RFKILL_BIN:-rfkill}"
 PKILL="${PKILL_BIN:-/usr/bin/pkill}"
 
-SCAN_SECONDS="${BLUETOOTH_SCAN_SECONDS:-15}"
-PAIR_SCAN_SECONDS="${BLUETOOTH_PAIR_SCAN_SECONDS:-30}"
+SCAN_SECONDS="${BLUETOOTH_SCAN_SECONDS:-${BLUETOOTH_PAIR_SCAN_SECONDS:-15}}"
 CONNECT_TIMEOUT="${BLUETOOTH_CONNECT_TIMEOUT:-12}"
 CONNECT_SETTLE_SECONDS="${BLUETOOTH_CONNECT_SETTLE_SECONDS:-15}"
 AGENT_TIMEOUT="${BLUETOOTH_AGENT_TIMEOUT:-45}"
 AUDIO_WAIT_SECONDS="${BLUETOOTH_AUDIO_WAIT_SECONDS:-12}"
 
 for variable_name in \
-    SCAN_SECONDS PAIR_SCAN_SECONDS CONNECT_TIMEOUT CONNECT_SETTLE_SECONDS \
+    SCAN_SECONDS CONNECT_TIMEOUT CONNECT_SETTLE_SECONDS \
     AGENT_TIMEOUT AUDIO_WAIT_SECONDS; do
     if [[ ! "${!variable_name}" =~ ^[0-9]+$ ]]; then
         case "$variable_name" in
             SCAN_SECONDS) SCAN_SECONDS=15 ;;
-            PAIR_SCAN_SECONDS) PAIR_SCAN_SECONDS=30 ;;
             CONNECT_TIMEOUT) CONNECT_TIMEOUT=12 ;;
             CONNECT_SETTLE_SECONDS) CONNECT_SETTLE_SECONDS=15 ;;
             AGENT_TIMEOUT) AGENT_TIMEOUT=45 ;;
@@ -71,15 +69,18 @@ if ! mkdir -p "$STATE_DIR" 2>/dev/null; then
 fi
 LOG_FILE="$STATE_DIR/bluetooth.log"
 touch "$LOG_FILE" 2>/dev/null || LOG_FILE="/dev/null"
-REPAIR_PREFIX="$STATE_DIR/bluetooth-repair"
 
-# Impede conexoes, pareamentos e reparos concorrentes. A acao mantem o lock
-# ate terminar; a acao scan fecha o descritor antes de reabrir o menu.
+# O menu pode ser aberto a qualquer momento; apenas a janela do menu e mutuamente
+# exclusiva (MENU_LOCK_FILE). Operacoes que alteram o estado do Bluetooth sao
+# serializadas em dois niveis:
+# - lock global (descritor 9): pareamento (o agente BlueZ e unico) e
+#   ligar/desligar o radio;
+# - lock por dispositivo: conectar, desconectar, esquecer e reparar um endereco
+#   especifico, permitindo operar outros dispositivos durante uma conexao.
 LOCK_FILE="${XDG_RUNTIME_DIR:-/tmp}/bluetooth-menu-$(id -u).lock"
+MENU_LOCK_FILE="${XDG_RUNTIME_DIR:-/tmp}/bluetooth-menu-ui-$(id -u).lock"
 exec 9>"$LOCK_FILE"
-if ! flock -n 9; then
-    exit 0
-fi
+ACTION_LOCK_HELD=0
 
 log_event() {
     printf '[%s] %s\n' "$(date '+%F %T')" "$*" >>"$LOG_FILE" 2>/dev/null || true
@@ -95,24 +96,97 @@ notify_user() {
     fi
 }
 
+acquire_action_lock() {
+    if ((ACTION_LOCK_HELD == 1)); then
+        return 0
+    fi
+    if flock -n 9; then
+        ACTION_LOCK_HELD=1
+        return 0
+    fi
+    notify_user 'Bluetooth ocupado' \
+        'Outra ação Bluetooth está em andamento. Tente novamente ao terminar.'
+    return 1
+}
+
+release_action_lock() {
+    if ((ACTION_LOCK_HELD == 1)); then
+        flock -u 9 2>/dev/null || true
+        ACTION_LOCK_HELD=0
+    fi
+}
+
+DEVICE_LOCK_FD=""
+DEVICE_LOCK_ADDR=""
+
+device_lock_path() {
+    local address="$1"
+
+    printf '%s/bluetooth-menu-dev-%s-%s.lock' \
+        "${XDG_RUNTIME_DIR:-/tmp}" "$(id -u)" "${address//:/_}"
+}
+
+# Serializa operacoes sobre um unico endereco, sem bloquear outros dispositivos.
+# A chamada nao e reentrante: o chamador deve liberar o lock antes de adquirir
+# um lock de outro endereco (ex.: o reparo libera o endereco antigo antes de
+# parear o novo endereco descoberto).
+acquire_device_lock() {
+    local address="$1"
+    local label="$2"
+    local lock_path
+
+    lock_path="$(device_lock_path "$address")"
+    if ! exec {DEVICE_LOCK_FD}>"$lock_path"; then
+        DEVICE_LOCK_FD=""
+        notify_user 'Dispositivo ocupado' \
+            "Não foi possível bloquear $label. Tente novamente."
+        return 1
+    fi
+    if ! flock -n "$DEVICE_LOCK_FD"; then
+        exec {DEVICE_LOCK_FD}>&-
+        DEVICE_LOCK_FD=""
+        log_event "dispositivo ocupado: $address ($label)"
+        notify_user 'Dispositivo ocupado' \
+            "Já existe uma operação em andamento com $label. Tente novamente ao terminar."
+        return 1
+    fi
+    DEVICE_LOCK_ADDR="$address"
+    return 0
+}
+
+release_device_lock() {
+    if [[ -n "$DEVICE_LOCK_FD" ]]; then
+        flock -u "$DEVICE_LOCK_FD" 2>/dev/null || true
+        exec {DEVICE_LOCK_FD}>&- 2>/dev/null || true
+    fi
+    DEVICE_LOCK_FD=""
+    DEVICE_LOCK_ADDR=""
+}
+
 # Sessao curta usada apenas para consultas e comandos que nao exigem agente.
 bt_batch() {
     local timeout_seconds="$1"
     shift
 
-    {
-        printf '%s\n' "$@"
-        printf 'quit\n'
-    } | timeout --signal=TERM --kill-after=2 "$timeout_seconds" \
-        "$BLUETOOTHCTL" 2>/dev/null || true
+    (
+        exec 9>&-
+        {
+            printf '%s\n' "$@"
+            printf 'quit\n'
+        } | timeout --signal=TERM --kill-after=2 "$timeout_seconds" \
+            "$BLUETOOTHCTL" 2>/dev/null || true
+    )
 }
 
 bt_command() {
     local timeout_seconds="$1"
     shift
 
-    timeout --signal=TERM --kill-after=2 "$timeout_seconds" \
-        "$BLUETOOTHCTL" "$@" 2>&1
+    (
+        exec 9>&-
+        timeout --signal=TERM --kill-after=2 "$timeout_seconds" \
+            "$BLUETOOTHCTL" "$@" 2>&1
+    )
 }
 
 refresh_status() {
@@ -157,6 +231,18 @@ device_is_connected() {
     grep -Eq '^[[:space:]]*Connected:[[:space:]]+yes' <<<"$info"
 }
 
+device_is_paired() {
+    local address="$1"
+    local output
+
+    output="$(bt_batch 5 'devices Paired')"
+    if ! grep -Eq '^[[:space:]]*Device[[:space:]]+' <<<"$output"; then
+        output="$(bt_batch 5 paired-devices)"
+    fi
+    grep -Eq "^[[:space:]]*Device[[:space:]]+${address}([[:space:]]|$)" \
+        <<<"$output"
+}
+
 wait_for_connection() {
     local address="$1"
     local deadline=$((SECONDS + CONNECT_SETTLE_SECONDS))
@@ -190,31 +276,6 @@ connection_error_summary() {
 
     summary="$(printf '%s\n' "$output" | awk 'NF { line = $0 } END { print line }')"
     printf '%s' "${summary:-operação não confirmada}"
-}
-
-mark_repair_needed() {
-    local address="$1"
-
-    : >"$REPAIR_PREFIX-$address" 2>/dev/null || true
-}
-
-clear_repair_needed() {
-    local address="$1"
-
-    rm -f -- "$REPAIR_PREFIX-$address" 2>/dev/null || true
-}
-
-repair_is_recent() {
-    local address="$1"
-    local marker="$REPAIR_PREFIX-$address"
-    local now mtime age
-
-    [[ -f "$marker" ]] || return 1
-    now="$(date +%s 2>/dev/null || true)"
-    mtime="$(stat -c '%Y' "$marker" 2>/dev/null || true)"
-    [[ "$now" =~ ^[0-9]+$ && "$mtime" =~ ^[0-9]+$ ]] || return 1
-    age=$((now - mtime))
-    ((age >= 0 && age < 300))
 }
 
 MENU_LABELS=()
@@ -298,21 +359,36 @@ device_label() {
 }
 
 # Exibe um menu dmenu e usa Walker somente quando dmenu nao esta disponivel.
-# A funcao retorna o indice selecionado; cancelar retorna uma linha vazia.
+# A funcao retorna o indice selecionado; fechar a janela retorna uma linha vazia.
 menu_choice() {
     local prompt="$1"
     shift
     local labels=("$@")
     local selected="" choice="" lines
-    local index
+    local index menu_lock_fd
+
+    # Evita duas janelas de menu simultaneas, sem compartilhar o lock das
+    # acoes. Assim uma nova invocacao pode exibir o menu durante uma conexao.
+    if ! exec {menu_lock_fd}>"$MENU_LOCK_FILE"; then
+        printf '\n'
+        return 0
+    fi
+    if ! flock -n "$menu_lock_fd"; then
+        exec {menu_lock_fd}>&-
+        printf '\n'
+        return 0
+    fi
 
     lines=$(( ${#labels[@]} < 12 ? ${#labels[@]} : 12 ))
     ((lines < 1)) && lines=1
     if command_is_available "$DMENU"; then
-        selected="$(printf '%s\n' "${labels[@]}" \
-            | "$DMENU" -i -l "$lines" -p "$prompt" \
-                -fn 'JetBrainsMono Nerd Font:size=10' \
-                -nb '#000000' -nf '#ffffff' -sb '#ffffff' -sf '#000000')" || true
+        selected="$(
+            exec 9>&-
+            printf '%s\n' "${labels[@]}" \
+                | "$DMENU" -i -l "$lines" -p "$prompt" \
+                    -fn 'JetBrainsMono Nerd Font:size=10' \
+                    -nb '#000000' -nf '#ffffff' -sb '#ffffff' -sf '#000000'
+        )" || true
         for index in "${!labels[@]}"; do
             if [[ "${labels[$index]}" == "$selected" ]]; then
                 choice="$index"
@@ -320,10 +396,15 @@ menu_choice() {
             fi
         done
     elif command_is_available "$WALKER"; then
-        choice="$(printf '%s\n' "${labels[@]}" \
-            | "$WALKER" --dmenu --index --exit --theme vantablack \
-                --width 644 --height 570 --placeholder "$prompt")" || true
+        choice="$(
+            exec 9>&-
+            printf '%s\n' "${labels[@]}" \
+                | "$WALKER" --dmenu --index --exit --theme vantablack \
+                    --width 644 --height 570 --placeholder "$prompt"
+        )" || true
     fi
+    flock -u "$menu_lock_fd" 2>/dev/null || true
+    exec {menu_lock_fd}>&-
     printf '%s\n' "$choice"
 }
 
@@ -331,6 +412,9 @@ agent_confirm() {
     local prompt="$1"
     local choice
 
+    # Esta funcao e chamada por command substitution; somente o menu
+    # principal deve conservar o descritor do lock.
+    exec 9>&-
     choice="$(menu_choice "$prompt" 'Confirmar' 'Cancelar')"
     case "$choice" in
         0) printf 'yes\n' ;;
@@ -342,13 +426,19 @@ agent_pin() {
     local prompt="$1"
     local selected=""
 
+    # Esta funcao e chamada por command substitution; somente o menu
+    # principal deve conservar o descritor do lock.
+    exec 9>&-
     # dmenu permite escolher 0000 ou digitar outro valor. Walker, usado como
     # fallback, oferece a opcao comum sem inventar um PIN para o dispositivo.
     if command_is_available "$DMENU"; then
-        selected="$(printf '%s\n' '0000' 'Cancelar' \
-            | "$DMENU" -i -l 2 -p "$prompt" \
-                -fn 'JetBrainsMono Nerd Font:size=10' \
-                -nb '#000000' -nf '#ffffff' -sb '#ffffff' -sf '#000000')" || true
+        selected="$(
+            exec 9>&-
+            printf '%s\n' '0000' 'Cancelar' \
+                | "$DMENU" -i -l 2 -p "$prompt" \
+                    -fn 'JetBrainsMono Nerd Font:size=10' \
+                    -nb '#000000' -nf '#ffffff' -sb '#ffffff' -sf '#000000'
+        )" || true
         if [[ "$selected" =~ ^[0-9]{1,16}$ ]]; then
             printf '%s\n' "$selected"
         else
@@ -417,23 +507,29 @@ passkey_window_show() {
         # A linha vazia fornece uma entrada para o dmenu e o EOF deixa a
         # janela interativa. O pipeline inteiro roda em segundo plano para
         # que o agente continue consumindo os eventos do bluetoothctl.
-        printf '\n' | "$DMENU" -i -l 1 -p "$message" \
-            -fn 'JetBrainsMono Nerd Font:size=10' \
-            -nb '#000000' -nf '#ffffff' -sb '#ffffff' -sf '#000000' \
-            >/dev/null 2>&1 &
+        (
+            exec 9>&-
+            exec "$DMENU" -i -l 1 -p "$message" \
+                -fn 'JetBrainsMono Nerd Font:size=10' \
+                -nb '#000000' -nf '#ffffff' -sb '#ffffff' -sf '#000000' \
+                </dev/null >/dev/null 2>&1
+        ) &
         PASSKEY_WINDOW_PID=$!
         return 0
     fi
 
     if command_is_available "$WALKER"; then
-        printf '\n' | "$WALKER" --dmenu --exit --theme vantablack \
-            --width 644 --height 130 --placeholder "$message" \
-            >/dev/null 2>&1 &
+        (
+            exec 9>&-
+            exec "$WALKER" --dmenu --exit --theme vantablack \
+                --width 644 --height 130 --placeholder "$message" \
+                </dev/null >/dev/null 2>&1
+        ) &
         PASSKEY_WINDOW_PID=$!
     fi
 }
 
-trap 'passkey_window_close' EXIT
+trap 'cleanup_discovery; passkey_window_close' EXIT
 
 # Pareia em segundo plano com um agente residente. A saida do bluetoothctl e
 # consumida aqui para responder prompts sem abrir um terminal. Retorna 0 quando
@@ -453,7 +549,7 @@ pair_with_agent() {
         return 1
     fi
 
-    coproc BTAGENT { "$BLUETOOTHCTL" 2>&1; }
+    coproc BTAGENT { exec 9>&-; exec "$BLUETOOTHCTL" 2>&1; }
     bt_in="${BTAGENT[1]}"
     bt_out="${BTAGENT[0]}"
     bt_pid="$BTAGENT_PID"
@@ -594,7 +690,9 @@ pair_with_agent() {
         sleep 0.5
         waited=$((waited + 1))
     done
-    kill "$bt_pid" 2>/dev/null || true
+    if kill -0 "$bt_pid" 2>/dev/null; then
+        kill "$bt_pid" 2>/dev/null || true
+    fi
     wait "$bt_pid" 2>/dev/null || true
 
     if [[ "$result" == connected ]]; then
@@ -645,6 +743,15 @@ integrate_audio() {
     local sink_ok=0 source_ok=0
     local deadline=$((SECONDS + AUDIO_WAIT_SECONDS))
 
+    device_details="$(device_info "$address")"
+    if ! device_has_audio_profile "$device_details"; then
+        notify_user 'Bluetooth sem perfil de áudio' \
+            "$label está conectado, mas não anunciou um perfil de áudio utilizável."
+        log_event "dispositivo sem perfil de audio: $address ($label)"
+        audio_refresh_status
+        return 0
+    fi
+
     if [[ "$(audio_backend)" == none ]]; then
         notify_user 'Bluetooth conectado' \
             "$label conectou, mas nenhum servidor de áudio está ativo."
@@ -686,7 +793,6 @@ integrate_audio() {
             if [[ "$moved_source" =~ ^[0-9]+$ && "$moved_source" -gt 0 ]]; then
                 body+=" ($moved_source aplicações de entrada movidas)"
             fi
-            clear_repair_needed "$address"
             notify_user 'Bluetooth conectado' "$label.$body"
             audio_refresh_status
             return 0
@@ -694,11 +800,10 @@ integrate_audio() {
         sleep 1
     done
 
-    device_details="$(device_info "$address")"
     if ! grep -Eqi 'UUID: (Audio Sink|Audio Source|Headset|Handsfree|Audio Stream Control|Published Audio)' \
         <<<"$device_details"; then
         notify_user 'Bluetooth sem perfil de áudio' \
-            "$label está conectado somente por BLE. Coloque-o em modo de pareamento e use Reparar vínculo existente."
+            "$label está conectado, mas não anunciou um perfil de áudio utilizável."
     else
         notify_user 'Bluetooth conectado' \
             "$label conectou, mas a saída de áudio Bluetooth não foi criada."
@@ -708,8 +813,23 @@ integrate_audio() {
     return 1
 }
 
+device_has_audio_profile() {
+    local device_details="$1"
+
+    grep -Eiq '^[[:space:]]*UUID:.*(Audio Sink|Audio Source|Headset|Handsfree|Audio Stream Control|Published Audio|A2DP|BAP|HFP|HSP)' \
+        <<<"$device_details"
+}
+
+connection_error_is_auth() {
+    local output="$1"
+
+    grep -Eiq 'AuthenticationFailed|NotAuthorized|not[[:space:]_-]*authorized|authentication|bond|link[[:space:]_-]*key|passkey' \
+        <<<"$output"
+}
+
 connect_device() {
     local address="$1"
+    local allow_rebind="${2:-1}"
     local label="${DEVICE_NAMES[$address]-$address}"
     local output="" last_error=""
     local attempt auth_failure=0
@@ -717,9 +837,12 @@ connect_device() {
     if ! ensure_radio; then
         return 1
     fi
+    if ! acquire_device_lock "$address" "$label"; then
+        return 1
+    fi
 
-    # Conectar nao chama pair. O trust e idempotente e so e aplicado a um
-    # dispositivo que ja foi selecionado pelo usuario no menu.
+    # Conectar um dispositivo pareado nao inicia pareamento, exceto quando
+    # uma falha de autenticacao exigir a atualizacao automatica do vinculo.
     bt_command 5 trust "$address" >/dev/null 2>&1 || true
     for ((attempt = 1; attempt <= 2; attempt++)); do
         if output="$(bt_command "$CONNECT_TIMEOUT" connect "$address")" \
@@ -727,44 +850,397 @@ connect_device() {
             log_event "conectado: $address ($label), tentativa $attempt"
             refresh_status
             integrate_audio "$address" "$label" || true
+            release_device_lock
             return 0
         fi
         last_error="$(connection_error_summary "$output")"
-        if grep -Eiq 'authenticat|not.?authori|bond|key' <<<"$output"; then
+        if connection_error_is_auth "$output"; then
             auth_failure=1
         fi
         log_event "tentativa $attempt falhou para $address ($label): $last_error"
         ((attempt < 2)) && sleep 1
     done
 
-    # Uma falha repetida em um dispositivo pareado pode indicar chaves antigas.
-    # Apenas marca uma acao de reparo; a remocao do vinculo nunca e silenciosa.
-    mark_repair_needed "$address"
-    if ((auth_failure == 1)); then
-        notify_user 'Vínculo Bluetooth inválido' \
-            "$label não autenticou. Abra o menu e escolha 'Reparar vínculo'."
-    else
+    if ((auth_failure == 1 && allow_rebind == 1)); then
+        release_device_lock
+        if rebind_device "$address" "$label"; then
+            return 0
+        fi
         notify_user 'Falha ao conectar Bluetooth' \
-            "$label não estabilizou. Se necessário, escolha 'Reparar vínculo'."
+            "Não foi possível atualizar o vínculo de $label. Tente conectar novamente."
+        return 1
     fi
+
+    release_device_lock
+    notify_user 'Falha ao conectar Bluetooth' \
+        "$label não estabilizou. Tente conectar novamente."
     return 1
 }
 
-run_scan() {
-    local output=""
+DISCOVERY_SCAN_PID=""
+DISCOVERY_SCAN_INPUT=""
+DISCOVERY_SCAN_DIR=""
+DISCOVERY_SCAN_OUTPUT=""
+DISCOVERY_MENU_PID=""
+DISCOVERY_MENU_RESULT=""
+DISCOVERY_MENU_LOCK_FD=""
+DISCOVERY_SNAPSHOT=""
+DISCOVERY_LABELS=()
+DISCOVERY_ADDRESSES=()
+DISCOVERY_MATCHING_ADDRESSES=()
 
+discovery_process_is_alive() {
+    local process_pid="$1"
+    local process_state
+
+    [[ "$process_pid" =~ ^[0-9]+$ ]] || return 1
+    kill -0 "$process_pid" 2>/dev/null || return 1
+    process_state="$(ps -o stat= -p "$process_pid" 2>/dev/null || true)"
+    [[ "$process_state" != Z* ]]
+}
+
+stop_discovery_scan() {
+    local input_fd="$DISCOVERY_SCAN_INPUT"
+    local scan_pid="$DISCOVERY_SCAN_PID"
+    local waited=0
+
+    if [[ "$input_fd" =~ ^[0-9]+$ ]]; then
+        printf 'scan off\nquit\n' >&"$input_fd" 2>/dev/null || true
+        exec {input_fd}>&- 2>/dev/null || true
+    fi
+    DISCOVERY_SCAN_INPUT=""
+
+    if [[ "$scan_pid" =~ ^[0-9]+$ ]]; then
+        while discovery_process_is_alive "$scan_pid" && ((waited < 30)); do
+            sleep 0.1
+            waited=$((waited + 1))
+        done
+        if discovery_process_is_alive "$scan_pid"; then
+            kill "$scan_pid" 2>/dev/null || true
+        fi
+        wait "$scan_pid" 2>/dev/null || true
+    fi
+    DISCOVERY_SCAN_PID=""
+}
+
+close_discovery_menu() {
+    local menu_pid="$DISCOVERY_MENU_PID"
+
+    if discovery_process_is_alive "$menu_pid"; then
+        kill "$menu_pid" 2>/dev/null || true
+    fi
+    if [[ "$menu_pid" =~ ^[0-9]+$ ]]; then
+        wait "$menu_pid" 2>/dev/null || true
+    fi
+    DISCOVERY_MENU_PID=""
+
+    if [[ "$DISCOVERY_MENU_LOCK_FD" =~ ^[0-9]+$ ]]; then
+        flock -u "$DISCOVERY_MENU_LOCK_FD" 2>/dev/null || true
+        exec {DISCOVERY_MENU_LOCK_FD}>&-
+    fi
+    DISCOVERY_MENU_LOCK_FD=""
+}
+
+cleanup_discovery() {
+    close_discovery_menu
+    stop_discovery_scan
+    if [[ -n "$DISCOVERY_SCAN_DIR" ]]; then
+        rm -rf -- "$DISCOVERY_SCAN_DIR" 2>/dev/null || true
+    fi
+    DISCOVERY_SCAN_DIR=""
+    DISCOVERY_SCAN_OUTPUT=""
+    DISCOVERY_MENU_RESULT=""
+}
+
+start_discovery_scan() {
+    local scan_dir="$1"
+
+    DISCOVERY_SCAN_DIR="$scan_dir"
+    DISCOVERY_SCAN_OUTPUT="$scan_dir/bluetoothctl.log"
+    : >"$DISCOVERY_SCAN_OUTPUT"
+    coproc DISCOVERY_BT {
+        exec 9>&-
+        exec "$BLUETOOTHCTL" >"$DISCOVERY_SCAN_OUTPUT" 2>&1
+    }
+    DISCOVERY_SCAN_INPUT="${DISCOVERY_BT[1]}"
+    DISCOVERY_SCAN_PID="$DISCOVERY_BT_PID"
+    printf 'scan on\n' >&"$DISCOVERY_SCAN_INPUT" 2>/dev/null || true
+}
+
+build_discovery_entries() {
+    local output="$1"
+    local preferred_name="${2:-}"
+    local row address name transport
+    local -a sorted_addresses=()
+    local -A seen_addresses=()
+
+    DISCOVERY_LABELS=()
+    DISCOVERY_ADDRESSES=()
+    DISCOVERY_MATCHING_ADDRESSES=()
+
+    while IFS= read -r row; do
+        if [[ "$row" =~ ^[[:space:]]*Device[[:space:]]+([[:xdigit:]:]{17})([[:space:]]+(.*))?$ ]]; then
+            address="${BASH_REMATCH[1]}"
+            [[ -n "${seen_addresses[$address]+present}" ]] && continue
+            [[ -n "${DEVICE_PAIRED[$address]+present}" ]] && continue
+            seen_addresses["$address"]=1
+            name="${BASH_REMATCH[3]-}"
+            name="${name##+([[:space:]])}"
+            name="${name%%+([[:space:]])}"
+            DEVICE_NAMES["$address"]="${name:-$address}"
+        fi
+    done <<<"$output"
+
+    if ((${#seen_addresses[@]} > 0)); then
+        mapfile -t sorted_addresses < <(printf '%s\n' "${!seen_addresses[@]}" | sort)
+    fi
+    for address in "${sorted_addresses[@]}"; do
+        name="${DEVICE_NAMES[$address]-$address}"
+        transport="${DEVICE_TRANSPORTS[$address]-unknown}"
+        DISCOVERY_ADDRESSES+=("$address")
+        DISCOVERY_LABELS+=("󰂯  $name [$transport] · $address")
+        if [[ -n "$preferred_name" && "$name" == "$preferred_name" ]]; then
+            DISCOVERY_MATCHING_ADDRESSES+=("$address")
+        fi
+    done
+
+    if ((${#DISCOVERY_LABELS[@]} == 0)); then
+        DISCOVERY_SNAPSHOT='__empty__'
+    else
+        DISCOVERY_SNAPSHOT="$(printf '%s\n' "${DISCOVERY_LABELS[@]}")"
+    fi
+}
+
+refresh_discovery_entries() {
+    local discovery=""
+
+    DEVICE_TRANSPORTS=()
+    if [[ -n "$DISCOVERY_SCAN_OUTPUT" && -f "$DISCOVERY_SCAN_OUTPUT" ]]; then
+        load_transport_lines "$(<"$DISCOVERY_SCAN_OUTPUT")"
+    fi
+    discovery="$(bt_batch 3 devices)"
+    build_discovery_entries "$discovery" "${DISCOVERY_PREFERRED_NAME:-}"
+}
+
+launch_discovery_menu() {
+    local input_file="$DISCOVERY_SCAN_DIR/menu.in"
+    local result_file="$DISCOVERY_SCAN_DIR/menu.out"
+    local lines
+    local -a menu_labels=()
+
+    if ! exec {DISCOVERY_MENU_LOCK_FD}>"$MENU_LOCK_FILE"; then
+        DISCOVERY_MENU_LOCK_FD=""
+        return 1
+    fi
+    if ! flock -n "$DISCOVERY_MENU_LOCK_FD"; then
+        exec {DISCOVERY_MENU_LOCK_FD}>&-
+        DISCOVERY_MENU_LOCK_FD=""
+        return 1
+    fi
+
+    if ((${#DISCOVERY_LABELS[@]} == 0)); then
+        menu_labels=('Procurando dispositivos...')
+    else
+        menu_labels=("${DISCOVERY_LABELS[@]}")
+    fi
+    lines=$(( ${#menu_labels[@]} < 12 ? ${#menu_labels[@]} : 12 ))
+    ((lines < 1)) && lines=1
+    printf '%s\n' "${menu_labels[@]}" >"$input_file"
+    : >"$result_file"
+    (
+        exec 9>&-
+        exec "$DMENU" -i -l "$lines" -p 'Bluetooth > Conectar novo dispositivo' \
+            -fn 'JetBrainsMono Nerd Font:size=10' \
+            -nb '#000000' -nf '#ffffff' -sb '#ffffff' -sf '#000000' \
+            <"$input_file" >"$result_file" 2>/dev/null
+    ) &
+    DISCOVERY_MENU_PID=$!
+    DISCOVERY_MENU_RESULT="$result_file"
+}
+
+selected_discovery_address() {
+    local selected="$1"
+    local index
+
+    for index in "${!DISCOVERY_LABELS[@]}"; do
+        if [[ "${DISCOVERY_LABELS[$index]}" == "$selected" ]]; then
+            printf '%s\n' "${DISCOVERY_ADDRESSES[$index]}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+preferred_discovery_address() {
+    local preferred_address="$1"
+    local address
+
+    [[ -n "$preferred_address" ]] || return 1
+    for address in "${DISCOVERY_ADDRESSES[@]}"; do
+        if [[ "$address" == "$preferred_address" ]]; then
+            printf '%s\n' "$address"
+            return 0
+        fi
+    done
+    return 1
+}
+
+scan_for_new_device_blocking() {
+    local preferred_address="${1:-}"
+    local preferred_name="${2:-}"
+    local discovery="" choice
+
+    DISCOVERED_TARGET=""
     if ! ensure_radio; then
         return 1
     fi
-    notify_user 'Bluetooth' "Procurando dispositivos por ${SCAN_SECONDS}s."
-    output="$({
-        printf 'scan on\n'
-        sleep "$SCAN_SECONDS"
-        printf 'scan off\nquit\n'
-    } | timeout --signal=TERM --kill-after=2 "$((SCAN_SECONDS + 5))" \
-        "$BLUETOOTHCTL" 2>&1)" || true
-    log_event "busca concluída: ${output:-sem saída}"
-    notify_user 'Bluetooth' 'Busca concluída. A lista será atualizada.'
+    notify_user 'Bluetooth' "Procurando novos dispositivos por ${SCAN_SECONDS}s."
+    discovery="$(
+        exec 9>&-
+        {
+            printf 'scan on\n'
+            sleep "$SCAN_SECONDS"
+            printf 'scan off\nquit\n'
+        } | timeout --signal=TERM --kill-after=2 "$((SCAN_SECONDS + 5))" \
+            "$BLUETOOTHCTL" 2>&1
+    )" || true
+    DEVICE_TRANSPORTS=()
+    log_event "busca concluída: ${discovery:-sem saída}"
+    load_transport_lines "$discovery"
+    discovery="$(bt_batch 6 devices)"
+    load_transport_lines "$discovery"
+    build_discovery_entries "$discovery" "$preferred_name"
+
+    if ((${#DISCOVERY_ADDRESSES[@]} == 0)); then
+        notify_user 'Bluetooth' 'Nenhum dispositivo novo foi encontrado.'
+        return 1
+    fi
+    if preferred_discovery_address "$preferred_address" >/dev/null 2>&1; then
+        DISCOVERED_TARGET="$preferred_address"
+        return 0
+    fi
+    if ((${#DISCOVERY_MATCHING_ADDRESSES[@]} == 1)); then
+        DISCOVERED_TARGET="${DISCOVERY_MATCHING_ADDRESSES[0]}"
+        return 0
+    fi
+    choice="$(menu_choice 'Bluetooth > Conectar novo dispositivo' "${DISCOVERY_LABELS[@]}")"
+    if [[ ! "$choice" =~ ^[0-9]+$ ]] \
+        || ((choice >= ${#DISCOVERY_ADDRESSES[@]})); then
+        return 1
+    fi
+    DISCOVERED_TARGET="${DISCOVERY_ADDRESSES[$choice]}"
+}
+
+scan_for_new_device_realtime() {
+    local preferred_address="${1:-}"
+    local preferred_name="${2:-}"
+    local scan_dir selected target current_snapshot previous_snapshot
+
+    DISCOVERED_TARGET=""
+    DISCOVERY_PREFERRED_NAME="$preferred_name"
+    if ! ensure_radio; then
+        return 1
+    fi
+    scan_dir="$(mktemp -d "$STATE_DIR/bluetooth-scan.XXXXXX")"
+    start_discovery_scan "$scan_dir"
+    # O primeiro menu aparece com esta linha antes mesmo da primeira consulta.
+    build_discovery_entries '' "$preferred_name"
+    if ! launch_discovery_menu; then
+        cleanup_discovery
+        return 1
+    fi
+
+    while :; do
+        if ! discovery_process_is_alive "$DISCOVERY_MENU_PID"; then
+            wait "$DISCOVERY_MENU_PID" 2>/dev/null || true
+            selected="$(<"$DISCOVERY_MENU_RESULT")"
+            if [[ -z "$selected" || "$selected" == 'Procurando dispositivos...' ]]; then
+                cleanup_discovery
+                return 1
+            fi
+            refresh_discovery_entries
+            if target="$(selected_discovery_address "$selected")"; then
+                DISCOVERED_TARGET="$target"
+                cleanup_discovery
+                return 0
+            fi
+            # O dispositivo pode ter desaparecido entre a seleção e a consulta.
+            launch_discovery_menu
+            continue
+        fi
+
+        previous_snapshot="$DISCOVERY_SNAPSHOT"
+        refresh_discovery_entries
+        if preferred_discovery_address "$preferred_address" >/dev/null 2>&1; then
+            DISCOVERED_TARGET="$preferred_address"
+            cleanup_discovery
+            return 0
+        fi
+        if ((${#DISCOVERY_MATCHING_ADDRESSES[@]} == 1)); then
+            DISCOVERED_TARGET="${DISCOVERY_MATCHING_ADDRESSES[0]}"
+            cleanup_discovery
+            return 0
+        fi
+
+        current_snapshot="$DISCOVERY_SNAPSHOT"
+        if [[ "$previous_snapshot" != "$current_snapshot" ]]; then
+            close_discovery_menu
+            selected="$(<"$DISCOVERY_MENU_RESULT")"
+            if target="$(selected_discovery_address "$selected")"; then
+                DISCOVERED_TARGET="$target"
+                cleanup_discovery
+                return 0
+            fi
+            launch_discovery_menu
+        fi
+        sleep 1
+    done
+}
+
+scan_for_new_device() {
+    if command_is_available "$DMENU"; then
+        scan_for_new_device_realtime "$@"
+    else
+        scan_for_new_device_blocking "$@"
+    fi
+}
+
+new_device_menu_label() {
+    local icon="$1"
+
+    if command_is_available "$DMENU"; then
+        printf '%s  Conectar novo dispositivo\n' "$icon"
+    else
+        printf '%s  Conectar novo dispositivo (%ss)\n' "$icon" "$SCAN_SECONDS"
+    fi
+}
+
+rebind_device() {
+    local address="$1"
+    local label="$2"
+    local original_name="${DEVICE_NAMES[$address]-$address}"
+
+    # connect_device libera o lock do endereco antes de chamar esta funcao,
+    # entao o endereco antigo pode ser protegido durante a remocao e liberado
+    # antes de parear o novo endereco descoberto.
+    if ! acquire_device_lock "$address" "$label"; then
+        return 1
+    fi
+    notify_user 'Bluetooth' \
+        "Atualizando o vínculo de $label. Coloque o dispositivo em modo de pareamento."
+    bt_command 8 disconnect "$address" >/dev/null 2>&1 || true
+    bt_command 8 remove "$address" >/dev/null 2>&1 || true
+    release_device_lock
+
+    # Um dispositivo LE pode ter um endereco diferente do vinculo BR/EDR.
+    # A busca tenta primeiro o mesmo endereco, depois um unico nome igual e
+    # somente entao pede uma selecao explicita no submenu de novos dispositivos.
+    unset "DEVICE_PAIRED[$address]" "DEVICE_DISCOVERED[$address]" \
+        "DEVICE_CONNECTED[$address]"
+    if ! scan_for_new_device "$address" "$original_name"; then
+        return 1
+    fi
+    pair_device "$DISCOVERED_TARGET" 0
 }
 
 report_simple_action() {
@@ -786,75 +1262,153 @@ report_simple_action() {
     return 1
 }
 
+confirm_forget() {
+    local label="$1"
+    local choice
+
+    choice="$(menu_choice "Bluetooth > $label > Esquecer?" \
+        'Confirmar esquecimento' 'Voltar')"
+    case "$choice" in
+        0) return 0 ;;
+        1) return 2 ;;
+        *) return 1 ;;
+    esac
+}
+
+forget_device() {
+    local address="$1"
+    local label="$(device_label "$address")"
+    local disconnect_output=""
+    local remove_output=""
+
+    local confirmation_status
+
+    if confirm_forget "$label"; then
+        confirmation_status=0
+    else
+        confirmation_status=$?
+    fi
+    case "$confirmation_status" in
+        0) ;;
+        2) return 2 ;;
+        *) return 1 ;;
+    esac
+
+    if ! acquire_device_lock "$address" "$label"; then
+        return 3
+    fi
+
+    # Remove tambem encerra a conexao no BlueZ, mas desconectar explicitamente
+    # torna o efeito previsivel e libera os perfis de audio antes da remocao.
+    if [[ -n "${DEVICE_CONNECTED[$address]+present}" ]]; then
+        disconnect_output="$(bt_command 8 disconnect "$address")" || true
+        log_event "desconexão antes de esquecer $address: ${disconnect_output:-sucesso}"
+    fi
+
+    remove_output="$(bt_command 8 remove "$address")" || true
+    if device_is_paired "$address"; then
+        log_event "falha ao esquecer $address: ${remove_output:-vínculo ainda presente}"
+        notify_user 'Falha ao esquecer dispositivo' \
+            "$label continua pareado. Consulte $LOG_FILE."
+        release_device_lock
+        refresh_status
+        return 1
+    fi
+
+    log_event "dispositivo esquecido: $address ($label); saída: ${remove_output:-sucesso}"
+    notify_user 'Dispositivo esquecido' "$label foi removido do Bluetooth."
+    release_device_lock
+    refresh_status
+    return 0
+}
+
+manage_device() {
+    local address="$1"
+    local label="$(device_label "$address")"
+    local choice
+    local action_label forget_status
+
+    while :; do
+        if [[ -n "${DEVICE_CONNECTED[$address]+present}" ]]; then
+            action_label='Desconectar'
+        else
+            action_label='Conectar'
+        fi
+
+        choice="$(menu_choice "Bluetooth > $label" \
+            "$action_label" 'Esquecer dispositivo' 'Voltar')"
+        case "$choice" in
+            0)
+                if [[ "$action_label" == 'Desconectar' ]]; then
+                    if acquire_device_lock "$address" "$label"; then
+                        report_simple_action 'Bluetooth' 'Dispositivo desconectado.' \
+                            'Não foi possível desconectar o dispositivo.' disconnect "$address" || true
+                        release_device_lock
+                    fi
+                else
+                    connect_device "$address" || true
+                fi
+                return 0
+            ;;
+            1)
+                forget_status=0
+                forget_device "$address" || forget_status=$?
+                if ((forget_status == 2)); then
+                    continue
+                fi
+                return 0
+                ;;
+            *)
+                return 2
+                ;;
+        esac
+    done
+}
+
 pair_device() {
-    local target="${1:-}"
-    local discovery="" row address name choice label transport
-    local labels=() addresses=()
+    local target="$1"
+    local allow_rebind="${2:-1}"
+    local label
     local pair_status
 
     if ! ensure_radio; then
         return 1
     fi
 
-    if [[ -z "$target" ]]; then
-        notify_user 'Bluetooth' \
-            "Procurando dispositivos por ${SCAN_SECONDS}s para parear."
-        discovery="$({
-            printf 'scan on\n'
-            sleep "$SCAN_SECONDS"
-            printf 'scan off\nquit\n'
-        } | timeout --signal=TERM --kill-after=2 "$((SCAN_SECONDS + 5))" \
-            "$BLUETOOTHCTL" 2>&1)" || true
-        log_event "busca para pareamento concluída: ${discovery:-sem saída}"
-        load_transport_lines "$discovery"
-        discovery="$(bt_batch 6 devices)"
-        while IFS= read -r row; do
-            if [[ "$row" =~ ^[[:space:]]*Device[[:space:]]+([[:xdigit:]:]{17})([[:space:]]+(.*))?$ ]]; then
-                address="${BASH_REMATCH[1]}"
-                name="${BASH_REMATCH[3]-}"
-                name="${name##+([[:space:]])}"
-                name="${name%%+([[:space:]])}"
-                [[ -n "${DEVICE_PAIRED[$address]+present}" ]] && continue
-                transport="${DEVICE_TRANSPORTS[$address]-unknown}"
-                labels+=("${name:-$address} [$transport] · $address")
-                addresses+=("$address")
-                DEVICE_NAMES["$address"]="${name:-$address}"
-            fi
-        done <<<"$discovery"
-
-        if ((${#addresses[@]} == 0)); then
-            notify_user 'Pareamento' 'Nenhum dispositivo não pareado foi encontrado.'
-            return 1
-        fi
-        choice="$(menu_choice 'Parear dispositivo' "${labels[@]}")"
-        if [[ ! "$choice" =~ ^[0-9]+$ ]] || ((choice >= ${#addresses[@]})); then
-            return 1
-        fi
-        target="${addresses[$choice]}"
-    fi
-
     # Uma corrida entre a descoberta e a selecao nao pode iniciar pareamento
     # de um dispositivo que ja foi pareado.
     if grep -Eq '^[[:space:]]*Paired:[[:space:]]+yes' <<<"$(device_info "$target")"; then
-        connect_device "$target"
+        connect_device "$target" "$allow_rebind"
         return $?
     fi
 
     label="${DEVICE_NAMES[$target]-$target}"
     notify_user 'Pareamento iniciado' \
         "Aguardando $label. Confirmações aparecerão em uma janela."
+    if ! acquire_action_lock; then
+        return 1
+    fi
+    if ! acquire_device_lock "$target" "$label"; then
+        release_action_lock
+        return 1
+    fi
     pair_status=0
     pair_with_agent "$target" "$AGENT_TIMEOUT" || pair_status=$?
     if ((pair_status == 0)); then
         if wait_for_connection "$target"; then
-            clear_repair_needed "$target"
             integrate_audio "$target" "$label" || true
             refresh_status
+            release_device_lock
+            release_action_lock
             return 0
         fi
-        connect_device "$target"
+        release_device_lock
+        release_action_lock
+        connect_device "$target" "$allow_rebind"
         return $?
     fi
+    release_device_lock
+    release_action_lock
     if ((pair_status == 2)); then
         notify_user 'Pareamento cancelado' "$label não foi pareado."
     else
@@ -864,48 +1418,29 @@ pair_device() {
     return 1
 }
 
-repair_device() {
-    local address="$1"
-    local label="${DEVICE_NAMES[$address]-$address}"
-    local choice
-
-    choice="$(menu_choice "Reparar $label" 'Continuar' 'Cancelar')"
-    [[ "$choice" == 0 ]] || return 0
-
-    notify_user 'Reparando vínculo Bluetooth' \
-        "Coloque $label fora do estojo e em modo de pareamento."
-    bt_command 8 disconnect "$address" >/dev/null 2>&1 || true
-    bt_command 8 remove "$address" >/dev/null 2>&1 || true
-    clear_repair_needed "$address"
-
-    # Um dispositivo LE pode ter um endereco diferente do vinculo BR/EDR
-    # usado pelo A2DP. Depois de remover o vinculo antigo, a nova varredura
-    # permite selecionar o endereco de audio anunciado pelo fone.
-    unset "DEVICE_PAIRED[$address]" "DEVICE_DISCOVERED[$address]" \
-        "DEVICE_CONNECTED[$address]"
-    pair_device
+connect_new_device() {
+    if scan_for_new_device; then
+        pair_device "$DISCOVERED_TARGET"
+    fi
 }
 
-repair_paired_device() {
-    local address choice
-    local labels=() addresses=() paired_addresses=()
+main_menu() {
+# refresh=0 reutiliza as entradas ja carregadas ao voltar de um submenu.
+local refresh="${1:-1}"
+local controller_output radio_state paired_output connected_output
+local choice kind value address name manage_status
+local -a paired_addresses=()
 
-    if ((${#DEVICE_PAIRED[@]} > 0)); then
-        mapfile -t paired_addresses < <(printf '%s\n' \
-            "${!DEVICE_PAIRED[@]}" | sort)
-    fi
-    for address in "${paired_addresses[@]}"; do
-        labels+=("$(device_label "$address")")
-        addresses+=("$address")
-    done
-    labels+=("Cancelar")
-
-    choice="$(menu_choice 'Reparar vínculo' "${labels[@]}")"
-    if [[ ! "$choice" =~ ^[0-9]+$ ]] || ((choice >= ${#addresses[@]})); then
-        return 0
-    fi
-    repair_device "${addresses[$choice]}"
-}
+if [[ "$refresh" == 1 ]]; then
+MENU_LABELS=()
+MENU_KINDS=()
+MENU_VALUES=()
+DEVICE_NAMES=()
+DEVICE_PAIRED=()
+DEVICE_DISCOVERED=()
+DEVICE_CONNECTED=()
+DEVICE_TRANSPORTS=()
+NAME_COUNTS=()
 
 controller_output="$(bt_batch 5 show)"
 if ! grep -Eq '^[[:space:]]*Controller[[:space:]]+' <<<"$controller_output"; then
@@ -914,9 +1449,8 @@ else
     radio_state="$(awk -F': ' '/^[[:space:]]*Powered:/ {print tolower($2); exit}' \
         <<<"$controller_output")"
     if [[ "$radio_state" == yes ]]; then
-        add_entry '󰂯  Desligar Bluetooth' radio-off
-        add_entry "󰤨  Procurar dispositivos (${SCAN_SECONDS}s)" scan
-        add_entry '󰂱  Parear novo dispositivo' pair
+        add_entry '󰂲 Desligar Bluetooth' radio-off
+        add_entry "$(new_device_menu_label '󰂱')" discover
 
         paired_output="$(bt_batch 5 'devices Paired')"
         if ! grep -Eq '^[[:space:]]*Device[[:space:]]+' <<<"$paired_output"; then
@@ -926,12 +1460,7 @@ else
         for address in "${!DEVICE_DISCOVERED[@]}"; do
             DEVICE_PAIRED["$address"]=1
         done
-        if ((${#DEVICE_PAIRED[@]} > 0)); then
-            add_entry '󰂰  Reparar vínculo existente' repair-menu
-        fi
 
-        discovered_output="$(bt_batch 5 devices)"
-        load_device_lines "$discovered_output"
         connected_output="$(bt_batch 5 'devices Connected')"
         load_connected_lines "$connected_output"
 
@@ -957,68 +1486,61 @@ else
             mapfile -t paired_addresses < <(printf '%s\n' "${!DEVICE_PAIRED[@]}" | sort)
         fi
         for address in "${paired_addresses[@]}"; do
-            if [[ -n "${DEVICE_CONNECTED[$address]+present}" ]]; then
-                add_entry "󰂱  Desconectar: $(device_label "$address")" disconnect "$address"
-            else
-                add_entry "󰂯  Conectar: $(device_label "$address")" connect "$address"
-                if repair_is_recent "$address"; then
-                    add_entry "󰂰  Reparar vínculo: $(device_label "$address")" repair "$address"
-                fi
-            fi
-        done
-
-        discovered_addresses=()
-        if ((${#DEVICE_DISCOVERED[@]} > 0)); then
-            mapfile -t discovered_addresses < <(printf '%s\n' \
-                "${!DEVICE_DISCOVERED[@]}" | sort)
-        fi
-        for address in "${discovered_addresses[@]}"; do
-            [[ -n "${DEVICE_PAIRED[$address]+present}" ]] && continue
-            add_entry "󰂯  Parear: $(device_label "$address")" pair "$address"
+            add_entry "󰂱  Gerenciar: $(device_label "$address")" manage "$address"
         done
     else
         add_entry '󰂯  Ativar Bluetooth' radio-on
-        add_entry '󰂱  Parear novo dispositivo' pair
     fi
+fi
 fi
 
 choice="$(menu_choice 'Bluetooth' "${MENU_LABELS[@]}")"
-[[ "$choice" =~ ^[0-9]+$ ]] || exit 0
-((choice < ${#MENU_KINDS[@]})) || exit 0
+[[ "$choice" =~ ^[0-9]+$ ]] || return 0
+((choice < ${#MENU_KINDS[@]})) || return 0
 
 kind="${MENU_KINDS[$choice]}"
 value="${MENU_VALUES[$choice]}"
 
-case "$kind" in
+    case "$kind" in
     radio-off)
-        report_simple_action 'Bluetooth' 'Rádio desligado.' \
-            'Não foi possível desligar o rádio.' power off || true
+        if acquire_action_lock; then
+            report_simple_action 'Bluetooth' 'Rádio desligado.' \
+                'Não foi possível desligar o rádio.' power off || true
+            release_action_lock
+        fi
         ;;
     radio-on)
-        report_simple_action 'Bluetooth' 'Rádio ligado.' \
-            'Não foi possível ligar o rádio.' power on || true
+        if acquire_action_lock; then
+            report_simple_action 'Bluetooth' 'Rádio ligado.' \
+                'Não foi possível ligar o rádio.' power on || true
+            release_action_lock
+        fi
         ;;
-    scan)
-        run_scan || true
-        exec 9>&-
-        exec "$0"
+    discover)
+        connect_new_device || true
         ;;
-    connect)
-        connect_device "$value" || true
-        ;;
-    disconnect)
-        report_simple_action 'Bluetooth' 'Dispositivo desconectado.' \
-            'Não foi possível desconectar o dispositivo.' disconnect "$value" || true
-        ;;
-    pair)
-        pair_device "$value" || true
-        ;;
-    repair)
-        repair_device "$value" || true
-        ;;
-    repair-menu)
-        repair_paired_device || true
+    manage)
+        if manage_device "$value"; then
+            manage_status=0
+        else
+            manage_status=$?
+        fi
+        ((manage_status == 2)) && return 2
         ;;
     noop)
         ;;
 esac
+}
+
+if main_menu; then
+    main_status=0
+else
+    main_status=$?
+fi
+while ((main_status == 2)); do
+    if main_menu 0; then
+        main_status=0
+    else
+        main_status=$?
+    fi
+done

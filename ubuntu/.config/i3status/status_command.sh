@@ -13,7 +13,8 @@ WIFI_MENU="${WIFI_MENU:-$HOME/.config/i3/wifi-menu.sh}"
 BLUETOOTH_MENU="${BLUETOOTH_MENU:-$HOME/.config/i3/bluetooth-menu.sh}"
 AUDIO_MENU="${AUDIO_MENU:-$HOME/.config/i3/audio-menu.sh}"
 JQ="${JQ_BIN:-/usr/bin/jq}"
-EVENT_LOG="${WIFI_EVENT_LOG:-/tmp/i3status-click-events.log}"PIPELINE_PID=""
+EVENT_LOG="${WIFI_EVENT_LOG:-/tmp/i3status-click-events.log}"
+PIPELINE_PID=""
 
 cleanup() {
     if [[ -n "$PIPELINE_PID" ]] && kill -0 "$PIPELINE_PID" 2>/dev/null; then
