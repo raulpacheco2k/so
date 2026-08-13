@@ -1,0 +1,6 @@
+{
+    "editor.minimap.enabled": false,
+    "workbench.activityBar.location": "top",
+    "diffEditor.hideUnchangedRegions.enabled": true,
+    "workbench.statusBar.visible": false
+}

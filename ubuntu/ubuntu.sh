@@ -150,6 +150,8 @@ project_files_are_present() {
         .config/walker/themes/vantablack/style.css \
         .config/btop/themes/grayscale.theme \
         .config/wireplumber/wireplumber.conf.d/51-ubuntu-bluetooth.conf \
+        .config/Code/User/keybindings.json \
+        .config/Code/User/settings.json \
         .unison/sync.prf; do
         if [[ ! -f "$PROJECT_DIR/$required_file" ]]; then
             return 1
