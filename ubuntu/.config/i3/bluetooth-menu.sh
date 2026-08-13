@@ -22,6 +22,7 @@ WALKER="${WALKER_BIN:-$HOME/.local/bin/walker}"
 NOTIFY_SEND="${NOTIFY_SEND_BIN:-notify-send}"
 RFKILL="${RFKILL_BIN:-rfkill}"
 PKILL="${PKILL_BIN:-/usr/bin/pkill}"
+BLUETOOTH_EPOCH="${BLUETOOTH_EPOCH:-/tmp/i3status-bluetooth.epoch}"
 
 SCAN_SECONDS="${BLUETOOTH_SCAN_SECONDS:-${BLUETOOTH_PAIR_SCAN_SECONDS:-15}}"
 CONNECT_TIMEOUT="${BLUETOOTH_CONNECT_TIMEOUT:-12}"
@@ -190,6 +191,7 @@ bt_command() {
 }
 
 refresh_status() {
+    touch "$BLUETOOTH_EPOCH" 2>/dev/null || true
     if command_is_available "$PKILL"; then
         "$PKILL" -USR1 -x i3status 2>/dev/null || true
     fi

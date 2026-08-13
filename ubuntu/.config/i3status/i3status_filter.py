@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 
 RE_PCT = re.compile(r"(\d+)(?:[.,]\d+)?%")
 CPU_LEADING_ZERO = re.compile(r"^(\D*)0(\d+%)")
@@ -27,6 +28,20 @@ AUDIO_MENU = os.environ.get(
 BLUETOOTHCTL = os.environ.get(
     "BLUETOOTHCTL_BIN", os.environ.get("BLUETOOTHCTL", "bluetoothctl")
 )
+
+# Frequencias de atualizacao (segundos) dos segmentos que rodam subprocessos.
+# A barra inteira e emitida a cada `interval` do i3status/config (5s); esses
+# TTLs segmentam o trabalho pesado para nao rodar em todo ciclo:
+# - Bluetooth: `bluetoothctl` e o mais custoso; o cache tambem e invalidado
+#   imediatamente quando o bluetooth-menu.sh toca BLUETOOTH_EPOCH.
+# - Volume: `pactl` e barato, mas nao precisa ser consultado a cada ciclo.
+BLUETOOTH_EPOCH = os.environ.get(
+    "BLUETOOTH_EPOCH", "/tmp/i3status-bluetooth.epoch"
+)
+BLUETOOTH_TTL = float(os.environ.get("I3STATUS_BLUETOOTH_TTL", "15"))
+VOLUME_TTL = float(os.environ.get("I3STATUS_VOLUME_TTL", "2"))
+
+SEGMENT_CACHE = {}
 
 BATTERY_ICON = "󰁹"
 BATTERY_LOW_ICON = "󰂃"
@@ -115,7 +130,32 @@ def parse_devices(output):
     return devices
 
 
+def _epoch_mtime(path):
+    try:
+        return os.stat(path).st_mtime
+    except OSError:
+        return 0.0
+
+
+def _cache_get(key, ttl, epoch_path):
+    entry = SEGMENT_CACHE.get(key)
+    if entry is None:
+        return None
+    when, epoch_mtime, value = entry
+    if time.time() - when >= ttl or _epoch_mtime(epoch_path) > epoch_mtime:
+        return None
+    return value
+
+
+def _cache_set(key, value, epoch_path):
+    SEGMENT_CACHE[key] = (time.time(), _epoch_mtime(epoch_path), value)
+
+
 def bluetooth_segment():
+    cached = _cache_get("bluetooth", BLUETOOTH_TTL, BLUETOOTH_EPOCH)
+    if cached is not None:
+        return cached
+
     controller, paired, connected, parsed_snapshot = bluetoothctl_snapshot()
     if not parsed_snapshot:
         # Older bluetoothctl versions may not echo commands in batch mode.
@@ -126,29 +166,35 @@ def bluetooth_segment():
         connected = parse_devices(bluetoothctl_output("devices", "Connected"))
 
     if not CONTROLLER_LINE_RE.search(controller):
-        return {
+        segment = {
             "name": "bluetooth",
             "markup": "none",
             "full_text": f"{BLUETOOTH_OFF_ICON} sem controlador",
         }
+        _cache_set("bluetooth", segment, BLUETOOTH_EPOCH)
+        return segment
 
     blocked = re.search(
         r"^\s*PowerState:\s+off-blocked\s*$", controller, re.MULTILINE
     )
     powered_match = re.search(r"^\s*Powered:\s+(yes|no)\s*$", controller, re.MULTILINE)
     if blocked:
-        return {
+        segment = {
             "name": "bluetooth",
             "markup": "none",
             "full_text": f"{BLUETOOTH_OFF_ICON} bloqueado",
         }
+        _cache_set("bluetooth", segment, BLUETOOTH_EPOCH)
+        return segment
     if not powered_match or powered_match.group(1) != "yes":
-        return {
+        segment = {
             "name": "bluetooth",
             "markup": "none",
             "full_text": f"{BLUETOOTH_OFF_ICON} Desligado",
             "color": GRAY,
         }
+        _cache_set("bluetooth", segment, BLUETOOTH_EPOCH)
+        return segment
 
     bluetooth_icon = BLUETOOTH_ON_ICON
 
@@ -166,7 +212,9 @@ def bluetooth_segment():
             shown += ", ..."
         text = f"{bluetooth_icon} {len(names)} conectados: {shown}"
 
-    return {"name": "bluetooth", "markup": "none", "full_text": text}
+    segment = {"name": "bluetooth", "markup": "none", "full_text": text}
+    _cache_set("bluetooth", segment, BLUETOOTH_EPOCH)
+    return segment
 
 
 def inject_bluetooth(segments):
@@ -257,6 +305,9 @@ def wpctl_volume_probe():
 
 
 def volume_segment():
+    cached = _cache_get("volume", VOLUME_TTL, "")
+    if cached is not None:
+        return cached
     for probe in (pulse_volume_probe, wpctl_volume_probe):
         result = probe()
         if result is None:
@@ -268,7 +319,9 @@ def volume_segment():
             icon = chr(0xF057E)
         else:
             icon = chr(0xF0580)
-        return {"name": "volume", "markup": "none", "full_text": f"{icon} {pct}%"}
+        segment = {"name": "volume", "markup": "none", "full_text": f"{icon} {pct}%"}
+        _cache_set("volume", segment, "")
+        return segment
     return None
 
 
