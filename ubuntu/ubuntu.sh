@@ -295,9 +295,17 @@ run_remote_script() {
     run_optional "$description" bash "$script"
 }
 
-# Cria a entrada de launcher do Zen para aparecer no menu de aplicacoes.
+# Cria a entrada de launcher do Zen para aparecer no menu de aplicacoes e
+# instala o icone do navegador no tema hicolor para que o launcher o exiba.
 write_zen_desktop_entry() {
-    mkdir -p "$HOME/.local/share/applications"
+    local icon_source="$HOME/.local/opt/zen/browser/chrome/icons/default/default128.png"
+    local icon_dir="$HOME/.local/share/icons/hicolor/128x128/apps"
+
+    mkdir -p "$HOME/.local/share/applications" "$icon_dir"
+    if [[ -f "$icon_source" ]]; then
+        install -m 644 "$icon_source" "$icon_dir/zen.png"
+    fi
+
     cat > "$HOME/.local/share/applications/zen.desktop" <<EOF
 [Desktop Entry]
 Type=Application
@@ -305,11 +313,20 @@ Name=Zen
 GenericName=Web Browser
 Comment=Zen Browser
 Exec=$HOME/.local/bin/zen %U
+Icon=zen
 Terminal=false
 Categories=Network;WebBrowser;
 Keywords=zen;browser;internet;
 EOF
     chmod 644 "$HOME/.local/share/applications/zen.desktop"
+
+    # Atualiza os caches para o icone e o launcher aparecerem de imediato.
+    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+        gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" >/dev/null 2>&1 || true
+    fi
+    if command -v update-desktop-database >/dev/null 2>&1; then
+        update-desktop-database "$HOME/.local/share/applications" >/dev/null 2>&1 || true
+    fi
 }
 
 install_zen_browser() {
@@ -318,9 +335,10 @@ install_zen_browser() {
     local install_dir="$HOME/.local/opt/zen"
     local bin_link="$HOME/.local/bin/zen"
 
-    # Idempotente: com o binario instalado e funcional, apenas garante o
-    # launcher e encerra sem baixar o TAR novamente.
-    if [[ -x "$bin_link" ]] && "$bin_link" --version >/dev/null 2>&1; then
+    # Sem um arquivo fornecido, apenas garante o launcher quando o binario ja
+    # esta instalado e funcional; com um arquivo, reinstala (atualiza).
+    if [[ -z "$archive" ]] && [[ -x "$bin_link" ]] \
+        && "$bin_link" --version >/dev/null 2>&1; then
         write_zen_desktop_entry
         return 0
     fi
@@ -367,6 +385,25 @@ install_zen_browser() {
 
     write_zen_desktop_entry
     "$bin_link" --version >/dev/null 2>&1
+}
+
+# Retorna a versao do Zen instalado (ultimo token de 'zen --version'), vazio
+# quando o binario nao esta instalado ou nao responde.
+zen_installed_version() {
+    if [[ -x "$HOME/.local/bin/zen" ]]; then
+        "$HOME/.local/bin/zen" --version 2>/dev/null | awk '{print $NF}'
+    fi
+}
+
+# Retorna a tag da release mais recente do Zen no GitHub, vazia em caso de
+# falha. Consulta a API oficial; a falha apenas faz a instalacao acontecer
+# (comparacao inconclusiva) sem registrar erro no relatorio.
+zen_latest_tag() {
+    curl --fail --silent --location --proto '=https' --tlsv1.2 \
+        'https://api.github.com/repos/zen-browser/desktop/releases/latest' \
+        2>/dev/null \
+        | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+        | head -n 1
 }
 
 install_walker() {
@@ -1381,32 +1418,45 @@ if download_remote "Lazydocker" "https://raw.githubusercontent.com/jesseduffield
     run_remote_script "Lazydocker (install)" "$LAZYDOCKER_INSTALLER"
 fi
 
-# O Zen Browser publica TARs Linux para amd64 e arm64. Se o binario ja estiver
-# funcional, nao rebaixa o arquivo novamente.
-if [[ -x "$HOME/.local/bin/zen" ]] && "$HOME/.local/bin/zen" --version >/dev/null 2>&1; then
-    run_optional "Zen Browser (install)" install_zen_browser
-else
-    case "$HOST_ARCH" in
-        amd64)
-            ZEN_ASSET="zen.linux-x86_64.tar.xz"
-            ;;
-        arm64)
-            ZEN_ASSET="zen.linux-aarch64.tar.xz"
-            ;;
-        *)
-            ZEN_ASSET=""
-            ;;
-    esac
-    if [[ -n "$ZEN_ASSET" ]]; then
+# O Zen Browser publica TARs Linux para amd64 e arm64. A instalacao usa sempre
+# a release mais recente do GitHub e, quando ja existe uma instalacao, compara
+# a tag da release latest com a versao instalada para atualizar somente quando
+# necessario.
+case "$HOST_ARCH" in
+    amd64)
+        ZEN_ASSET="zen.linux-x86_64.tar.xz"
+        ;;
+    arm64)
+        ZEN_ASSET="zen.linux-aarch64.tar.xz"
+        ;;
+    *)
+        ZEN_ASSET=""
+        ;;
+esac
+if [[ -n "$ZEN_ASSET" ]]; then
+    ZEN_UPDATE_NEEDED=true
+    if [[ -x "$HOME/.local/bin/zen" ]] \
+        && "$HOME/.local/bin/zen" --version >/dev/null 2>&1; then
+        ZEN_INSTALLED_VERSION="$(zen_installed_version)"
+        ZEN_LATEST_TAG="$(zen_latest_tag || true)"
+        if [[ -n "$ZEN_LATEST_TAG" \
+            && "$ZEN_INSTALLED_VERSION" == "$ZEN_LATEST_TAG" ]]; then
+            ZEN_UPDATE_NEEDED=false
+        fi
+    fi
+
+    if [[ "$ZEN_UPDATE_NEEDED" == true ]]; then
         ZEN_ARCHIVE="$REMOTE_DIR/$ZEN_ASSET"
         if download_remote "Zen Browser" \
-            "https://github.com/zen-browser/desktop/releases/download/1.21.12b/$ZEN_ASSET" \
+            "https://github.com/zen-browser/desktop/releases/latest/download/$ZEN_ASSET" \
             "$ZEN_ARCHIVE"; then
             run_optional "Zen Browser (install)" install_zen_browser "$ZEN_ARCHIVE"
         fi
     else
-        record_failure "Zen Browser (no Linux asset for architecture: $HOST_ARCH)"
+        run_optional "Zen Browser (launcher)" write_zen_desktop_entry
     fi
+else
+    record_failure "Zen Browser (no Linux asset for architecture: $HOST_ARCH)"
 fi
 
 # O Walker publica a release atual somente para x86_64. Em outra arquitetura
