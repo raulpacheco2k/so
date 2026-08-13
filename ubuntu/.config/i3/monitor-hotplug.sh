@@ -6,6 +6,8 @@ umask 077
 
 XRANDR_BIN="${XRANDR_BIN:-xrandr}"
 XDOTOOL_BIN="${XDOTOOL_BIN:-xdotool}"
+FEH_BIN="${FEH_BIN:-feh}"
+WALLPAPER="${WALLPAPER:-$HOME/.config/i3/dot-hands.jpg}"
 POLL_INTERVAL="${MONITOR_HOTPLUG_POLL_INTERVAL:-1}"
 MODE_WAIT_INTERVAL="${MONITOR_HOTPLUG_MODE_WAIT_INTERVAL:-0.5}"
 MODE_WAIT_ATTEMPTS="${MONITOR_HOTPLUG_MODE_WAIT_ATTEMPTS:-12}"
@@ -189,6 +191,12 @@ choose_base() {
     printf '%s\n' "${outputs[0]}"
 }
 
+refresh_wallpaper() {
+    if ! "$FEH_BIN" --bg-fill "$WALLPAPER" >/dev/null 2>>"$LOG_FILE"; then
+        log "falha ao atualizar o wallpaper"
+    fi
+}
+
 apply_layout() {
     local query
     local output
@@ -290,6 +298,10 @@ apply_layout() {
     if ! center_pointer_on_output "$pointer_target"; then
         log "layout aplicado, mas o ponteiro não foi reposicionado"
     fi
+
+    # Redesenha o wallpaper no novo tamanho do root window; sem isso, a imagem
+    # ficaria no tamanho antigo até um restart do i3.
+    refresh_wallpaper
 
     return 0
 }
