@@ -39,6 +39,10 @@ connected_outputs() {
     awk '$2 == "connected" { print $1 }' <<<"$1" | sort -u
 }
 
+disconnected_outputs() {
+    awk '$2 == "disconnected" { print $1 }' <<<"$1" | sort -u
+}
+
 output_has_mode() {
     local query="$1"
     local wanted="$2"
@@ -264,6 +268,13 @@ apply_layout() {
             xrandr_args+=(--left-of "$previous")
             previous="$output"
         fi
+    done
+
+    # Desliga saídas desconectadas para não deixar CRTC/monitor RandR órfão
+    # (fantasma), que faz o i3lock desenhar um indicador por monitor fantasma.
+    mapfile -t disconnected < <(disconnected_outputs "$query")
+    for output in "${disconnected[@]}"; do
+        xrandr_args+=(--output "$output" --off)
     done
 
     if ! "$XRANDR_BIN" "${xrandr_args[@]}" >/dev/null 2>>"$LOG_FILE"; then
