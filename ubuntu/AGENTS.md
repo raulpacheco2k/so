@@ -90,6 +90,12 @@ As cores semânticas vivas atualmente usadas pelo lock screen e pelo filtro do i
 - Evitar comandos bloqueantes em `exec_always` do i3, pois eles atrasam o restart do i3 e a aparição da barra.
 - Depois de mudanças simples na configuração, preferir `i3-msg reload` a um restart completo do i3. Reiniciar o compositor ou a sessão somente quando a alteração exigir isso.
 
+### Segurança
+
+- O grupo `docker` equivale a root sem senha (acesso total ao socket do daemon); por padrão o `ubuntu.sh` não adiciona o usuário a ele e comandos docker usam `sudo docker`. O comportamento antigo pode ser restaurado com `UBUNTU_SETUP_DOCKER_GROUP=true`.
+- O `success-delay.sh` do lock é executado pelo PAM como root; por isso é instalado em `/usr/local/libexec/i3-success-delay.sh` (root-only), nunca de um caminho gravável pelo usuário.
+- O debug do `wifi-menu.sh` só é ativado com `WIFI_MENU_DEBUG=true` — o trace de `set -x` registraria a senha do Wi-Fi (`nmcli ... password`). Logs, epoch e locks ficam em `$XDG_RUNTIME_DIR` ou `~/.local/state/ubuntu-i3/`, nunca em `/tmp` com nomes previsíveis.
+
 ## Portabilidade e dependências
 
 Esta configuração contém escolhas específicas do hardware atual, incluindo nomes de monitores, resolução, dispositivo de entrada, backlight e wallpaper. Antes de reutilizá-la em outro computador, revisar `xrandr`, `xinput`, o dispositivo de backlight e os caminhos em `.config/i3/config`.

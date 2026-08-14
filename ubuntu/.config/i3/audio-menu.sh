@@ -23,7 +23,7 @@ fi
 
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/ubuntu-i3"
 if ! mkdir -p "$STATE_DIR" 2>/dev/null; then
-    STATE_DIR="${XDG_RUNTIME_DIR:-/tmp}"
+    STATE_DIR="$HOME"
 fi
 LOG_FILE="$STATE_DIR/audio.log"
 
@@ -34,7 +34,7 @@ log_event() {
 # Evita que cliques repetidos abram varios menus ou troquem a saida ao mesmo
 # tempo. O descritor e fechado antes das acoes para nao bloquear o proximo
 # clique.
-LOCK_FILE="${XDG_RUNTIME_DIR:-/tmp}/audio-menu-$(id -u).lock"
+LOCK_FILE="${XDG_RUNTIME_DIR:-$STATE_DIR}/audio-menu-$(id -u).lock"
 exec 9>"$LOCK_FILE"
 if ! flock -n 9; then
     exit 0

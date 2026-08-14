@@ -22,7 +22,6 @@ WALKER="${WALKER_BIN:-$HOME/.local/bin/walker}"
 NOTIFY_SEND="${NOTIFY_SEND_BIN:-notify-send}"
 RFKILL="${RFKILL_BIN:-rfkill}"
 PKILL="${PKILL_BIN:-/usr/bin/pkill}"
-BLUETOOTH_EPOCH="${BLUETOOTH_EPOCH:-/tmp/i3status-bluetooth.epoch}"
 
 SCAN_SECONDS="${BLUETOOTH_SCAN_SECONDS:-${BLUETOOTH_PAIR_SCAN_SECONDS:-15}}"
 CONNECT_TIMEOUT="${BLUETOOTH_CONNECT_TIMEOUT:-12}"
@@ -66,8 +65,10 @@ fi
 
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/ubuntu-i3"
 if ! mkdir -p "$STATE_DIR" 2>/dev/null; then
-    STATE_DIR="${XDG_RUNTIME_DIR:-/tmp}"
+    STATE_DIR="${XDG_RUNTIME_DIR:-$HOME/.local/state}/ubuntu-i3"
 fi
+# Arquivo de invalidacao compartilhado com o filtro do i3status; fora de /tmp.
+BLUETOOTH_EPOCH="${BLUETOOTH_EPOCH:-$STATE_DIR/i3status-bluetooth.epoch}"
 LOG_FILE="$STATE_DIR/bluetooth.log"
 touch "$LOG_FILE" 2>/dev/null || LOG_FILE="/dev/null"
 
@@ -78,8 +79,8 @@ touch "$LOG_FILE" 2>/dev/null || LOG_FILE="/dev/null"
 #   ligar/desligar o radio;
 # - lock por dispositivo: conectar, desconectar, esquecer e reparar um endereco
 #   especifico, permitindo operar outros dispositivos durante uma conexao.
-LOCK_FILE="${XDG_RUNTIME_DIR:-/tmp}/bluetooth-menu-$(id -u).lock"
-MENU_LOCK_FILE="${XDG_RUNTIME_DIR:-/tmp}/bluetooth-menu-ui-$(id -u).lock"
+LOCK_FILE="${XDG_RUNTIME_DIR:-$STATE_DIR}/bluetooth-menu-$(id -u).lock"
+MENU_LOCK_FILE="${XDG_RUNTIME_DIR:-$STATE_DIR}/bluetooth-menu-ui-$(id -u).lock"
 exec 9>"$LOCK_FILE"
 ACTION_LOCK_HELD=0
 
@@ -124,7 +125,7 @@ device_lock_path() {
     local address="$1"
 
     printf '%s/bluetooth-menu-dev-%s-%s.lock' \
-        "${XDG_RUNTIME_DIR:-/tmp}" "$(id -u)" "${address//:/_}"
+        "${XDG_RUNTIME_DIR:-$STATE_DIR}" "$(id -u)" "${address//:/_}"
 }
 
 # Serializa operacoes sobre um unico endereco, sem bloquear outros dispositivos.

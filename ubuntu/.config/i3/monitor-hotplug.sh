@@ -16,13 +16,14 @@ POINTER_WAIT_ATTEMPTS="${MONITOR_HOTPLUG_POINTER_WAIT_ATTEMPTS:-10}"
 if [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
     RUNTIME_DIR="$XDG_RUNTIME_DIR"
 else
-    RUNTIME_DIR="${TMPDIR:-/tmp}/monitor-hotplug-${UID:-$(id -u)}"
+    RUNTIME_DIR="$HOME/.local/state/ubuntu-i3/monitor-hotplug"
 fi
 LOCK_FILE="$RUNTIME_DIR/monitor-hotplug.lock"
 BASE_FILE="$RUNTIME_DIR/monitor-hotplug-base"
 LOG_FILE="$RUNTIME_DIR/monitor-hotplug.log"
 
 mkdir -p "$RUNTIME_DIR" 2>/dev/null || exit 1
+[[ -O "$RUNTIME_DIR" ]] || exit 1
 
 # Um reload do i3 pode iniciar uma nova cópia antes que a anterior termine.
 # O descritor permanece aberto durante toda a vida do watcher.

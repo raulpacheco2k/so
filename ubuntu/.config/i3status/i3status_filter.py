@@ -36,7 +36,12 @@ BLUETOOTHCTL = os.environ.get(
 #   imediatamente quando o bluetooth-menu.sh toca BLUETOOTH_EPOCH.
 # - Volume: `pactl` e barato, mas nao precisa ser consultado a cada ciclo.
 BLUETOOTH_EPOCH = os.environ.get(
-    "BLUETOOTH_EPOCH", "/tmp/i3status-bluetooth.epoch"
+    "BLUETOOTH_EPOCH",
+    os.path.join(
+        os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")),
+        "ubuntu-i3",
+        "i3status-bluetooth.epoch",
+    ),
 )
 BLUETOOTH_TTL = float(os.environ.get("I3STATUS_BLUETOOTH_TTL", "15"))
 VOLUME_TTL = float(os.environ.get("I3STATUS_VOLUME_TTL", "2"))

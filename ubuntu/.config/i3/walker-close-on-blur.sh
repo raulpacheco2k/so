@@ -5,9 +5,12 @@ set -u
 
 WALKER_CLASS="walker"
 WALKER="${WALKER_BIN:-$HOME/.local/bin/walker}"
-LOCK="/tmp/walker-close-on-blur.lock"
-CLOSE_LOCK="/tmp/walker-close-on-blur.close.lock"
-CLOSE_STAMP="/tmp/walker-close-on-blur.close.stamp"
+LOCK_DIR="${XDG_RUNTIME_DIR:-$HOME/.local/state/ubuntu-i3}"
+mkdir -p "$LOCK_DIR" 2>/dev/null || true
+umask 077
+LOCK="$LOCK_DIR/walker-close-on-blur.lock"
+CLOSE_LOCK="$LOCK_DIR/walker-close-on-blur.close.lock"
+CLOSE_STAMP="$LOCK_DIR/walker-close-on-blur.close.stamp"
 
 # Mantem um lock de processo para impedir acumulacao quando o i3 faz reload.
 exec 9>"$LOCK"

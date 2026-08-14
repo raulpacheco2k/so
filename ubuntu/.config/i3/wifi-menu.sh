@@ -6,11 +6,22 @@
 # proprio dmenu, sem abrir aplicacoes externas.
 set -Eeuo pipefail
 
-DEBUG_LOG="${WIFI_MENU_DEBUG_LOG:-/tmp/wifi-menu-debug.log}"
-exec 8>>"$DEBUG_LOG"
-BASH_XTRACEFD=8
-PS4='+ ${BASH_SOURCE}:${LINENO}: '
-set -x
+# O trace so e ativado explicitamente (WIFI_MENU_DEBUG=true): com set -x o
+# comando 'nmcli ... password "$password"' exporia a senha do Wi-Fi. Logs e
+# locks ficam fora de /tmp (pasta do usuario, sem nomes previsiveis).
+umask 077
+
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/ubuntu-i3"
+mkdir -p "$STATE_DIR" 2>/dev/null || true
+RUNTIME_DIR="${XDG_RUNTIME_DIR:-$STATE_DIR}"
+
+DEBUG_LOG="${WIFI_MENU_DEBUG_LOG:-$STATE_DIR/wifi-menu-debug.log}"
+if [[ "${WIFI_MENU_DEBUG:-false}" == true ]]; then
+    exec 8>>"$DEBUG_LOG"
+    BASH_XTRACEFD=8
+    PS4='+ ${BASH_SOURCE}:${LINENO}: '
+    set -x
+fi
 
 export LC_ALL=C
 
@@ -30,7 +41,7 @@ fi
 # Evita que cliques repetidos abram varios Walkers ou varias operacoes no
 # NetworkManager ao mesmo tempo. O lock permanece ativo enquanto os menus
 # estao na tela e so e liberado quando uma acao comeca a executar.
-LOCK_FILE="${XDG_RUNTIME_DIR:-/tmp}/wifi-menu-$(id -u).lock"
+LOCK_FILE="$RUNTIME_DIR/wifi-menu-$(id -u).lock"
 exec 9>"$LOCK_FILE"
 if ! flock -n 9; then
     exit 0
@@ -477,7 +488,7 @@ discover_networks_realtime() {
         DISCOVERY_SAVED["$name"]=1
     done < <(load_saved_profiles)
 
-    discovery_dir="$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/wifi-scan.XXXXXX")"
+    discovery_dir="$(mktemp -d "$RUNTIME_DIR/wifi-scan.XXXXXX")"
     DISCOVERY_MENU_DIR="$discovery_dir"
     refresh_discovery_entries
     if ! launch_discovery_menu; then

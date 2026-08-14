@@ -1239,24 +1239,37 @@ fi
 
 # Escreve o stack PAM do locker: sem faildelay (feedback de senha errada
 # imediato) e com pam_exec segurando o anel verde no desbloqueio correto.
-LOCK_USER="$INSTALL_USER"
-LOCK_HOME="$(getent passwd "$LOCK_USER" | cut -d: -f6)"
-LOCK_HOME="${LOCK_HOME:-$HOME}"
+# O script do pam_exec e instalado em /usr/local/libexec (root-only): um
+# script em caminho gravavel pelo usuario executado como root no unlock
+# seria uma escalada de privilegio trivial para qualquer processo do usuario.
+LOCK_DELAY_SCRIPT=/usr/local/libexec/i3-success-delay.sh
+if sudo install -D -m 755 -o root -g root \
+    "$PROJECT_DIR/.config/i3/success-delay.sh" "$LOCK_DELAY_SCRIPT" 2>/dev/null \
+    && [[ -x "$LOCK_DELAY_SCRIPT" ]]; then
+    PAM_EXEC_LINE="auth [success=ok default=ignore] pam_exec.so $LOCK_DELAY_SCRIPT"
+else
+    PAM_EXEC_LINE=""
+    record_failure "Lock screen (success-delay install)"
+fi
 if [[ -f /etc/pam.d/i3lock && ! -f /etc/pam.d/i3lock.bak ]]; then
     sudo cp /etc/pam.d/i3lock /etc/pam.d/i3lock.bak
 fi
-printf '%s\n' \
-    "#" \
-    "# PAM configuration file for the i3lock screen locker." \
-    "# Instalado pelo ubuntu.sh (projeto so)." \
-    "# - Sem pam_faildelay / pam_sss: feedback de senha errada imediato." \
-    "# - pam_unix requisite: falha para na hora (sem delay no erro)." \
-    "# - pam_exec: so roda no sucesso, segurando o anel verde ~0.4s." \
-    "#" \
-    "auth required pam_env.so" \
-    "auth requisite pam_unix.so nullok nodelay" \
-    "auth [success=ok default=ignore] pam_exec.so ${LOCK_HOME}/.config/i3/success-delay.sh" \
-    | sudo tee /etc/pam.d/i3lock >/dev/null
+{
+    printf '%s\n' \
+        "#" \
+        "# PAM configuration file for the i3lock screen locker." \
+        "# Instalado pelo ubuntu.sh (projeto so)." \
+        "# - Sem pam_faildelay / pam_sss: feedback de senha errada imediato." \
+        "# - pam_unix requisite: falha para na hora (sem delay no erro)." \
+        "# - pam_exec: so roda no sucesso, segurando o anel verde ~0.4s." \
+        "# - O script do pam_exec fica em /usr/local/libexec (root-only)." \
+        "#" \
+        "auth required pam_env.so" \
+        "auth requisite pam_unix.so nodelay"
+    if [[ -n "$PAM_EXEC_LINE" ]]; then
+        printf '%s\n' "$PAM_EXEC_LINE"
+    fi
+} | sudo tee /etc/pam.d/i3lock >/dev/null
 
 # Avisa se o sistema depender de autenticacao via SSSD/LDAP (stack local).
 if systemctl is-active sssd >/dev/null 2>&1; then
@@ -1364,13 +1377,28 @@ install_tmux_plugins() {
 
 run_optional "Tmux plugins (resurrect + continuum)" install_tmux_plugins
 
-# Adiciona o usuario ao grupo Docker para permitir seu uso sem sudo.
-if ! getent group docker >/dev/null; then
-    sudo addgroup --system docker
-fi
-if ! id -nG "$INSTALL_USER" | grep -qw docker; then
-    sudo usermod -aG docker "$INSTALL_USER"
-    echo "O grupo docker foi adicionado; ele ficara ativo apos novo login ou reinicio."
+# O grupo docker equivale a root sem senha (acesso total ao socket do
+# daemon). Por padrao o usuario nao entra no grupo: comandos docker usam
+# 'sudo docker', preservando a barreira de autenticacao. O comportamento
+# antigo pode ser restaurado com UBUNTU_SETUP_DOCKER_GROUP=true.
+if [[ "${UBUNTU_SETUP_DOCKER_GROUP:-false}" == true ]]; then
+    if ! getent group docker >/dev/null; then
+        sudo addgroup --system docker
+    fi
+    if ! id -nG "$INSTALL_USER" | grep -qw docker; then
+        sudo usermod -aG docker "$INSTALL_USER"
+        echo "O grupo docker foi adicionado; ele ficara ativo apos novo login ou reinicio."
+    fi
+else
+    if id -nG "$INSTALL_USER" | grep -qw docker; then
+        if sudo gpasswd -d "$INSTALL_USER" docker 2>/dev/null; then
+            echo "O usuario foi removido do grupo docker; use 'sudo docker' (senha protegida)."
+        else
+            record_failure "Docker group (unable to remove)"
+        fi
+    else
+        echo "Docker sem grupo: use 'sudo docker' para comandos docker."
+    fi
 fi
 
 section "Instalando ferramentas externas do usuario"

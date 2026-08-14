@@ -13,7 +13,11 @@ WIFI_MENU="${WIFI_MENU:-$HOME/.config/i3/wifi-menu.sh}"
 BLUETOOTH_MENU="${BLUETOOTH_MENU:-$HOME/.config/i3/bluetooth-menu.sh}"
 AUDIO_MENU="${AUDIO_MENU:-$HOME/.config/i3/audio-menu.sh}"
 JQ="${JQ_BIN:-/usr/bin/jq}"
-EVENT_LOG="${WIFI_EVENT_LOG:-/tmp/i3status-click-events.log}"
+EVENT_LOG="${WIFI_EVENT_LOG:-$HOME/.local/state/ubuntu-i3/i3status-click-events.log}"
+umask 077
+if [[ -n "$EVENT_LOG" ]]; then
+    mkdir -p "$(dirname "$EVENT_LOG")" 2>/dev/null || true
+fi
 PIPELINE_PID=""
 
 cleanup() {
