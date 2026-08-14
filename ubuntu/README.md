@@ -15,11 +15,13 @@ curl --fail --location https://raw.githubusercontent.com/raulpacheco2k/so/main/u
 Revise o script antes de executar comandos baixados da internet.
 
 Na primeira execução interativa, as perguntas aparecem nesta ordem: username
-(com o usuário atual como padrão), e-mail, senha da chave SSH, senha do sudo e
-reinício ao final. As senhas não são gravadas no log nem exportadas para outro
-processo durante o bootstrap. Chaves protegidas por passphrase não são
-carregadas automaticamente no agente; use `ssh-add ~/.ssh/id_ed25519` quando
-quiser disponibilizá-las na sessão.
+(com o usuário atual como padrão), e-mail, senha do sudo e reinício ao final.
+As senhas não são gravadas no log nem exportadas para outro processo durante o
+bootstrap. A passphrase da chave SSH é obrigatória e é solicitada pelo próprio
+`ssh-keygen` no terminal (etapa de configuração da chave, antes das
+instalações longas), sem passar a senha por argumento de linha de comando;
+chaves existentes sem passphrase recebem uma automaticamente. Depois de
+instalada, carregue a chave na sessão com `ssh-add ~/.ssh/id_ed25519`.
 
 O instalador detecta a GPU antes de configurar drivers: mantém amdgpu/Mesa em
 máquinas AMD e só instala o driver recomendado e componentes específicos em

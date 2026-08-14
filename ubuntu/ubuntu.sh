@@ -26,7 +26,6 @@ SUDO_KEEPALIVE_PID=""
 EMAIL="${UBUNTU_SETUP_EMAIL:-}"
 USERNAME="${UBUNTU_SETUP_USERNAME:-}"
 REBOOT_AFTER_INSTALL="${UBUNTU_SETUP_REBOOT:-false}"
-SSH_PASSPHRASE=""
 PROJECT_DIR=""
 CURRENT_USERNAME="$(id -un)"
 APT_UPDATED=false
@@ -638,8 +637,8 @@ collect_user_input() {
         exit 1
     fi
 
-    # A ordem desta funcao e intencional: username, e-mail, passphrase SSH,
-    # senha do sudo e decisao de reinicio. Nenhum segredo e exportado.
+    # A ordem desta funcao e intencional: username, e-mail, senha do sudo e
+    # decisao de reinicio. Nenhum segredo e exportado.
     if [[ -z "$USERNAME" ]]; then
         read -r -p "Informe seu username [${system_username}]: " input </dev/tty
         USERNAME="${input:-$system_username}"
@@ -647,13 +646,6 @@ collect_user_input() {
 
     if [[ -z "$EMAIL" ]]; then
         read -r -p "Informe seu e-mail: " EMAIL </dev/tty
-    fi
-
-    if [[ ! -f "$HOME/.ssh/id_ed25519" ]]; then
-        read -r -s -p "Informe a senha da chave SSH (vazio para sem senha): " SSH_PASSPHRASE </dev/tty
-        printf '\n'
-    else
-        echo "Chave SSH existente: a passphrase nao sera alterada."
     fi
 
     read -r -s -p "Informe a senha do sudo: " sudo_password </dev/tty
@@ -724,7 +716,9 @@ bootstrap_project "$@"
 validate_environment
 
 section "Configurando a chave SSH"
-# Cria a chave SSH apenas quando ela ainda nao existe.
+# Cria a chave SSH apenas quando ela ainda nao existe. A passphrase e
+# obrigatoria e e pedida pelo proprio ssh-keygen no terminal; a senha nunca e
+# passada por argumento de linha de comando (evita exposicao no cmdline).
 SSH_KEY="$HOME/.ssh/id_ed25519"
 SSH_PUBLIC="$SSH_KEY.pub"
 mkdir -p -m 700 "$HOME/.ssh"
@@ -743,10 +737,22 @@ if [[ -e "$SSH_KEY" && ! -O "$SSH_KEY" ]] \
     exit 1
 fi
 if [[ ! -f "$SSH_KEY" ]]; then
-    ssh-keygen -t ed25519 -C "$EMAIL" -f "$SSH_KEY" -N "$SSH_PASSPHRASE"
+    echo "A passphrase da chave SSH e obrigatoria; defina uma senha nao vazia nos prompts do ssh-keygen."
+    ssh-keygen -t ed25519 -C "$EMAIL" -f "$SSH_KEY"
 fi
+# Passphrase obrigatoria: chaves novas geradas sem senha e chaves existentes
+# desprotegidas recebem uma passphrase via ssh-keygen -p (interativo). O -P ''
+# testa apenas a passphrase vazia: sem ele, ssh-keygen pediria a senha no tty
+# ate para chaves protegidas, confundindo o resultado do loop.
+while ssh-keygen -y -P '' -f "$SSH_KEY" </dev/null >/dev/null 2>&1; do
+    echo "A chave SSH nao possui passphrase; defina uma agora (Enter na senha antiga, se pedida)."
+    if ! ssh-keygen -p -f "$SSH_KEY"; then
+        record_failure "SSH passphrase (not set)"
+        break
+    fi
+done
 if [[ ! -f "$SSH_PUBLIC" ]]; then
-    if ! ssh-keygen -y -f "$SSH_KEY" </dev/null > "$SSH_PUBLIC"; then
+    if ! ssh-keygen -y -f "$SSH_KEY" > "$SSH_PUBLIC"; then
         rm -f "$SSH_PUBLIC"
         record_failure "SSH public key (unable to derive)"
     fi
@@ -755,27 +761,7 @@ chmod 600 "$SSH_KEY"
 if [[ -f "$SSH_PUBLIC" ]]; then
     chmod 644 "$SSH_PUBLIC"
 fi
-unset SSH_PASSPHRASE
 
-# Chaves protegidas por passphrase nao sao solicitadas novamente nem gravadas
-# em ambiente/arquivo. O usuario pode adiciona-las manualmente com ssh-add;
-# chaves sem passphrase recebem um lifetime limitado no agente.
-if [[ -f "$SSH_PUBLIC" ]]; then
-    if [[ -z "${SSH_AUTH_SOCK:-}" ]]; then
-        if ! eval "$(ssh-agent -s)"; then
-            record_failure "SSH agent (unable to start)"
-        fi
-    fi
-    if [[ -n "${SSH_AUTH_SOCK:-}" ]]; then
-        if ssh-keygen -y -f "$SSH_KEY" </dev/null >/dev/null 2>&1; then
-            if ! ssh-add -t 8h "$SSH_KEY" </dev/null; then
-                record_failure "SSH agent (key not added)"
-            fi
-        else
-            echo "Chave SSH protegida por passphrase; ela nao sera adicionada automaticamente ao agente."
-        fi
-    fi
-fi
 section "Preparando o APT e as dependencias basicas"
 apt_update
 install_apt_packages \
